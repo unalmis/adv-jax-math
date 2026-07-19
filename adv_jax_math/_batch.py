@@ -261,15 +261,15 @@ def _flat_to_device_local_leaf(x, num_devices, local_size, mesh=None):
     return _reshape_with_sharding(x, shape, spec, mesh)
 
 
-def _batch_device_local_leaf(x, chunk_size, mesh=None):
+def _batch_device_local_leaf(x, batch_size, mesh=None):
     local_size = x.shape[1]
-    num_chunks = local_size // chunk_size
-    chunked_size = num_chunks * chunk_size
+    num_chunks = local_size // batch_size
+    chunked_size = num_chunks * batch_size
     full = x[:, :chunked_size]
-    # Scan chunk layout after moveaxis: (num_chunks, num_devices, chunk_size, ...).
+    # Scan chunk layout after moveaxis: (num_chunks, num_devices, batch_size, ...).
     full = _reshape_with_sharding(
         full,
-        (x.shape[0], num_chunks, chunk_size, *x.shape[2:]),
+        (x.shape[0], num_chunks, batch_size, *x.shape[2:]),
         PartitionSpec("x", None, None, *(None,) * (x.ndim - 2)),
         mesh,
     )
@@ -310,8 +310,8 @@ def _flat_to_device_local(x, num_devices, local_size, mesh=None):
     )
 
 
-def _batch_device_local(x, chunk_size, mesh=None):
-    return tree_map(lambda y: _batch_device_local_leaf(y, chunk_size, mesh), x)
+def _batch_device_local(x, batch_size, mesh=None):
+    return tree_map(lambda y: _batch_device_local_leaf(y, batch_size, mesh), x)
 
 
 def _device_local_remainder(x, chunked_size):
@@ -324,7 +324,7 @@ def _scan_device_local_chunks(
     reduction,
     chunk_reduction,
     num_devices,
-    chunk_size,
+    batch_size,
     mesh,
     *args,
     **kwargs,
@@ -335,7 +335,7 @@ def _scan_device_local_chunks(
         x = _flatten_device_local(x, mesh)
         y = chunk_reduction(f_partial(*x))
         if reduction is None:
-            y = _flat_to_device_local(y, num_devices, chunk_size, mesh)
+            y = _flat_to_device_local(y, num_devices, batch_size, mesh)
         return y
 
     scan_fun = _scan_append if reduction is None else _scan_reduce
@@ -344,7 +344,7 @@ def _scan_device_local_chunks(
 
 def _evaluate_device_local_in_chunks(
     fun,
-    chunk_size,
+    batch_size,
     argnums,
     reduction,
     chunk_reduction,
@@ -355,7 +355,7 @@ def _evaluate_device_local_in_chunks(
 ):
     local_size = tree_leaves(args[argnums[0]])[0].shape[1]
 
-    if local_size <= chunk_size:
+    if local_size <= batch_size:
         flat_args = tuple(
             _flatten_device_local(a, mesh) if i in argnums else a
             for i, a in enumerate(args)
@@ -366,17 +366,17 @@ def _evaluate_device_local_in_chunks(
         return y
 
     scan_x = tuple(
-        _batch_device_local(a, chunk_size, mesh) if i in argnums else a
+        _batch_device_local(a, batch_size, mesh) if i in argnums else a
         for i, a in enumerate(args)
     )
-    local_remainder = local_size % chunk_size
+    local_remainder = local_size % batch_size
     y = _scan_device_local_chunks(
         fun,
         argnums,
         reduction,
         chunk_reduction,
         num_devices,
-        chunk_size,
+        batch_size,
         mesh,
         *scan_x,
         **kwargs,
@@ -407,7 +407,7 @@ def _evaluate_device_local_in_chunks(
 
 def _evaluate_sharded(
     fun,
-    chunk_size,
+    batch_size,
     argnums,
     reduction,
     chunk_reduction,
@@ -418,7 +418,7 @@ def _evaluate_sharded(
     mesh = _make_automatic_mesh(num_devices)
     return _evaluate_sharded_on_mesh(
         fun,
-        chunk_size,
+        batch_size,
         argnums,
         reduction,
         chunk_reduction,
@@ -431,7 +431,7 @@ def _evaluate_sharded(
 
 def _evaluate_on_first_device(
     fun,
-    chunk_size,
+    batch_size,
     argnums,
     reduction,
     chunk_reduction,
@@ -444,7 +444,7 @@ def _evaluate_on_first_device(
     def evaluate(args_):
         return _evaluate_in_chunks(
             fun,
-            chunk_size,
+            batch_size,
             argnums,
             reduction,
             chunk_reduction,
@@ -492,7 +492,7 @@ def _evaluate_on_first_device(
 
 def _evaluate_sharded_on_mesh(
     fun,
-    chunk_size,
+    batch_size,
     argnums,
     reduction,
     chunk_reduction,
@@ -523,7 +523,7 @@ def _evaluate_sharded_on_mesh(
     if n_shardable == 0:
         return _evaluate_on_first_device(
             fun,
-            chunk_size,
+            batch_size,
             argnums,
             reduction,
             chunk_reduction,
@@ -533,7 +533,7 @@ def _evaluate_sharded_on_mesh(
         )
 
     # Global sharded layout: the divisible prefix is partitioned over axis 0.
-    if chunk_size is None:
+    if batch_size is None:
         out_shardable = chunk_reduction(fun(*args_shardable, **kwargs))
     else:
         args_local = tuple(
@@ -542,7 +542,7 @@ def _evaluate_sharded_on_mesh(
         )
         out_shardable = _evaluate_device_local_in_chunks(
             fun,
-            chunk_size,
+            batch_size,
             argnums,
             reduction,
             chunk_reduction,
@@ -559,7 +559,7 @@ def _evaluate_sharded_on_mesh(
 
     out_remainder = _evaluate_on_first_device(
         fun,
-        chunk_size,
+        batch_size,
         argnums,
         reduction,
         chunk_reduction,
@@ -576,7 +576,7 @@ def _evaluate_sharded_on_mesh(
 
 def _evaluate_in_chunks(
     vmapped_fun,
-    chunk_size,
+    batch_size,
     argnums,
     reduction=None,
     chunk_reduction=identity,
@@ -589,7 +589,7 @@ def _evaluate_in_chunks(
     if shard_input_data:
         return _evaluate_sharded(
             vmapped_fun,
-            chunk_size,
+            batch_size,
             argnums,
             reduction,
             chunk_reduction,
@@ -597,16 +597,16 @@ def _evaluate_in_chunks(
             **kwargs,
         )
 
-    if chunk_size is None:
+    if batch_size is None:
         return chunk_reduction(vmapped_fun(*args, **kwargs))
 
     n_elements = tree_leaves(args[argnums[0]])[0].shape[0]
-    if n_elements <= chunk_size:
+    if n_elements <= batch_size:
         return chunk_reduction(vmapped_fun(*args, **kwargs))
 
     scan_x, remain_x = zip(
         *[
-            _batch_and_remainder(a, chunk_size) if i in argnums else (a, a)
+            _batch_and_remainder(a, batch_size) if i in argnums else (a, a)
             for i, a in enumerate(args)
         ]
     )
@@ -617,7 +617,7 @@ def _evaluate_in_chunks(
     if reduction is None:
         scan_y = _unchunk(scan_y)
 
-    if n_elements % chunk_size == 0:
+    if n_elements % batch_size == 0:
         return scan_y
 
     remain_y = chunk_reduction(vmapped_fun(*remain_x, **kwargs))
@@ -643,12 +643,12 @@ def _map_stripped(fun, x):
     return vmap(fun)(x)
 
 
-def vmap_chunked(
+def batch_vmap(
     f,
     /,
     in_axes=0,
     *,
-    chunk_size=None,
+    batch_size=None,
     reduction=None,
     chunk_reduction=identity,
     shard_input_data=False,
@@ -665,7 +665,7 @@ def vmap_chunked(
       https://docs.jax.dev/en/latest/jep/
       2026-custom-derivatives.html#main-problem-descriptions,
       this function can simply ignore custom derivative rules
-      of the function in wraps if ``chunk_size`` is not ``None``,
+      of the function in wraps if ``batch_size`` is not ``None``,
       and therefore can damp the effeciency gains of ``sparse_pullback``.
       Use ``batch_map`` instead to avoid this,
       or try to make a hack with jax.custom_transforms to bypass this.
@@ -683,7 +683,7 @@ def vmap_chunked(
         The function to be vectorised.
     in_axes : int or None
         The axes that should be scanned along. Only supports ``0`` or ``None``.
-    chunk_size : int or None
+    batch_size : int or None
         Size to split computation into chunks.
         If no chunking should be done or the chunk size is the full input
         then supply ``None``.
@@ -696,10 +696,10 @@ def vmap_chunked(
     shard_input_data : bool
         Whether to shard mapped input data across devices before applying
         chunked batching. The divisible prefix is split across devices; when
-        supplied, ``chunk_size`` bounds the batches processed on each device. A
+        supplied, ``batch_size`` bounds the batches processed on each device. A
         local remainder is evaluated once per device, and a final global
         remainder is evaluated once overall. The mapped length need not be
-        divisible by either the device count or ``chunk_size``. Default is
+        divisible by either the device count or ``batch_size``. Default is
         ``False``.
 
     Returns
@@ -710,12 +710,12 @@ def vmap_chunked(
     """
     in_axes, argnums = _parse_in_axes(in_axes)
     f = vmap(f, in_axes=in_axes)
-    if chunk_size is None and not shard_input_data:
+    if batch_size is None and not shard_input_data:
         return lambda *args, **kwargs: chunk_reduction(f(*args, **kwargs))
     return partial(
         _evaluate_in_chunks,
         f,
-        chunk_size,
+        batch_size,
         argnums,
         reduction,
         chunk_reduction,
@@ -746,7 +746,7 @@ def batch_map(
     However, the ``strip_dim0`` flag should cover the most common case
     of nesting calls where ``batch_size`` is one on the outermost call.
 
-    If ``fun`` is natively vectorized, this can be preferable to ``vmap_chunked``
+    If ``fun`` is natively vectorized, this can be preferable to ``batch_vmap``
     to reduce compilation time, avoid issues such as executing all branches of
     code conditioned on dynamic values, or avoid messing up the behavior of
     jvp's and vjp's under vmap, e.g.
@@ -757,7 +757,7 @@ def batch_map(
 
     See Also
     --------
-    vmap_chunked
+    batch_vmap
         If the function does not support native vectorization.
 
     Parameters
@@ -821,8 +821,8 @@ def batch_map(
     )
 
 
-def batched_vectorize(  # noqa: C901
-    pyfunc, *, excluded=frozenset(), signature=None, chunk_size=None
+def batch_vectorize(  # noqa: C901
+    pyfunc, *, excluded=frozenset(), signature=None, batch_size=None
 ):
     """Define a vectorized function with broadcasting and batching.
 
@@ -861,7 +861,7 @@ def batched_vectorize(  # noqa: C901
         for vectorized matrix-vector multiplication. If provided, ``pyfunc``
         receives and must return arrays whose shapes match the corresponding
         core dimensions.
-    chunk_size : int, optional
+    batch_size : int, optional
         Number of mapped elements evaluated per batch. By default, all mapped
         elements are evaluated together, matching :func:`jax.numpy.vectorize`.
 
@@ -969,8 +969,8 @@ def batched_vectorize(  # noqa: C901
             if all(axis is None for axis in in_axes):
                 dims_to_expand.append(len(broadcast_shape) - 1 - negdim)
             else:
-                vectorized_func = vmap_chunked(
-                    vectorized_func, in_axes, chunk_size=chunk_size
+                vectorized_func = batch_vmap(
+                    vectorized_func, in_axes, batch_size=batch_size
                 )
         result = vectorized_func(*squeezed_args)
 
@@ -984,13 +984,13 @@ def batched_vectorize(  # noqa: C901
     return wrapped
 
 
-def jacfwd_chunked(
+def batch_jacfwd(
     fun,
     argnums=0,
     has_aux=False,
     holomorphic=False,
     *,
-    chunk_size=None,
+    batch_size=None,
 ):
     """Jacobian of ``fun`` evaluated column-by-column using forward-mode AD.
 
@@ -1014,9 +1014,9 @@ def jacfwd_chunked(
         element is auxiliary data. Default False.
     holomorphic: Optional, bool.
         Indicates whether ``fun`` is promised to be holomorphic. Default False.
-    chunk_size: int
+    batch_size: int
         The size of the batches to pass to vmap. If None, defaults to the largest
-        possible chunk_size.
+        possible batch_size.
 
     Returns
     -------
@@ -1042,12 +1042,12 @@ def jacfwd_chunked(
         tree_map(partial(_check_input_dtype_jacfwd, holomorphic), dyn_args)
         pushfwd = partial(jax.jvp, f_partial, dyn_args, has_aux=has_aux)
         if has_aux:
-            y, jac, aux = vmap_chunked(pushfwd, chunk_size=chunk_size)(
+            y, jac, aux = batch_vmap(pushfwd, batch_size=batch_size)(
                 _std_basis(dyn_args)
             )
             aux = tree_map(lambda x: x[0], aux)
         else:
-            y, jac = vmap_chunked(pushfwd, chunk_size=chunk_size)(_std_basis(dyn_args))
+            y, jac = batch_vmap(pushfwd, batch_size=batch_size)(_std_basis(dyn_args))
             aux = None
 
         y = tree_map(lambda x: x[0], y)
@@ -1060,14 +1060,14 @@ def jacfwd_chunked(
     return jacfun
 
 
-def jacrev_chunked(
+def batch_jacrev(
     fun,
     argnums=0,
     has_aux=False,
     holomorphic=False,
     allow_int=False,
     *,
-    chunk_size=None,
+    batch_size=None,
 ):
     """Jacobian of ``fun`` evaluated row-by-row using reverse-mode AD.
 
@@ -1095,9 +1095,9 @@ def jacrev_chunked(
         Whether to allow differentiating with respect to integer valued inputs. The
         gradient of an integer input will have a trivial vector-space dtype (float0).
         Default False.
-    chunk_size: int
+    batch_size: int
         The size of the batches to pass to vmap. If None, defaults to the largest
-        possible chunk_size.
+        possible batch_size.
 
     Returns
     -------
@@ -1123,7 +1123,7 @@ def jacrev_chunked(
         tree_map(partial(_check_input_dtype_jacrev, holomorphic, allow_int), dyn_args)
         y, pullback, *maybe_aux = jax.vjp(f_partial, *dyn_args, has_aux=has_aux)
         tree_map(partial(_check_output_dtype_jacrev, holomorphic), y)
-        jac = vmap_chunked(pullback, chunk_size=chunk_size)(_std_basis(y))
+        jac = batch_vmap(pullback, batch_size=batch_size)(_std_basis(y))
         jac = jac[0] if isinstance(argnums, int) else jac
         example_args = dyn_args[0] if isinstance(argnums, int) else dyn_args
         jac_tree = tree_map(partial(_jacrev_unravel, y), example_args, jac)
