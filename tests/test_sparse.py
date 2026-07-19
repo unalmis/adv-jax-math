@@ -113,14 +113,21 @@ class TestDerivative:
     def test_sparse_pullback_sharded_chunked(self):
         """Test sparse_pullback with chunking and sharded input data."""
         _run_forced_cpu_devices("""
+            from collections import Counter
+
             import numpy as np
 
+            import adv_jax_math._batch as _batch
             import jax
             import jax.numpy as jnp
+            from jax.sharding import NamedSharding, PartitionSpec
+            from packaging.version import Version
 
             from adv_jax_math import sparse_pullback
 
             assert jax.device_count() == 4
+            supports_sharding = Version(jax.__version__) >= Version("0.10.2")
+            supports_jvp = Version(jax.__version__) >= Version("0.11.0")
             x = jnp.arange(13.0)
 
             cases = [
@@ -164,8 +171,152 @@ class TestDerivative:
                 ),
             ]
             for fun, expected in cases:
-                np.testing.assert_allclose(fun(x), expected)
-                np.testing.assert_allclose(jax.jit(fun)(x), expected)
+                actual = fun(x)
+                np.testing.assert_allclose(actual, expected)
+
+                actual = jax.jit(fun)(x)
+                np.testing.assert_allclose(actual, expected)
+
+                if supports_sharding:
+                    out, pullback = jax.vjp(fun, x)
+                    cotangent = jax.device_put(jnp.ones_like(out), out.sharding)
+                    np.testing.assert_allclose(pullback(cotangent)[0], 2 * x)
+                    np.testing.assert_allclose(
+                        jax.grad(lambda y: jnp.sum(fun(y)))(x),
+                        2 * x,
+                    )
+                    np.testing.assert_allclose(
+                        jax.jit(jax.grad(lambda y: jnp.sum(fun(y))))(x),
+                        2 * x,
+                    )
+
+                if supports_jvp:
+                    tangent = jax.jvp(fun, (x,), (jnp.ones_like(x),))[1]
+                    expected_tangent = 2 * x
+                    if expected.ndim == 0:
+                        expected_tangent = jnp.sum(expected_tangent)
+                    np.testing.assert_allclose(tangent, expected_tangent)
+
+            if supports_sharding:
+                calls = []
+
+                def record(local, *, global_shape):
+                    calls.append((global_shape, tuple(local.shape)))
+
+                def tracked(z):
+                    global_shape = tuple(z.shape)
+                    jax.debug.callback(partitioned=True)(
+                        lambda local, global_shape=global_shape: record(
+                            local, global_shape=global_shape
+                        ),
+                        z,
+                    )
+                    return z**2
+
+                execution_x = jnp.arange(35.0)
+                execution_fun = lambda y: sparse_pullback(
+                    tracked,
+                    y,
+                    batch_size=3,
+                    shard_input_data=True,
+                )
+                actual = jax.jit(execution_fun)(execution_x)
+                actual.block_until_ready()
+                np.testing.assert_allclose(actual, execution_x**2)
+                expected_calls = Counter({
+                    ((12,), (3,)): 8,
+                    ((8,), (2,)): 4,
+                    ((3,), (3,)): 1,
+                })
+                assert Counter(calls) == expected_calls
+
+                calls.clear()
+                gradient = jax.jit(
+                    jax.grad(lambda y: jnp.sum(execution_fun(y)))
+                )(execution_x)
+                gradient.block_until_ready()
+                np.testing.assert_allclose(gradient, 2 * execution_x)
+                assert Counter(calls) == expected_calls
+
+            if supports_sharding:
+                even_x = x[:-1]
+                sharded_fun = lambda y: sparse_pullback(
+                    lambda z: z**2,
+                    y,
+                    batch_size=2,
+                    shard_input_data=True,
+                )
+                original_reshard = _batch._reshard_leaf_to_replicated
+                resharded_inputs = []
+
+                def record_reshard(leaf, mesh):
+                    resharded_inputs.append(leaf)
+                    return original_reshard(leaf, mesh)
+
+                _batch._reshard_leaf_to_replicated = record_reshard
+                try:
+                    for run in (sharded_fun, jax.jit(sharded_fun)):
+                        actual = run(even_x)
+                        np.testing.assert_allclose(actual, even_x**2)
+                        assert not actual.sharding.is_fully_replicated
+                finally:
+                    _batch._reshard_leaf_to_replicated = original_reshard
+                assert not resharded_inputs
+
+                caller_mesh = jax.make_mesh((4,), ("caller",))
+                explicit_inputs = (
+                    jax.device_put(
+                        even_x,
+                        NamedSharding(caller_mesh, PartitionSpec("caller")),
+                    ),
+                    jax.device_put(
+                        x,
+                        NamedSharding(caller_mesh, PartitionSpec()),
+                    ),
+                )
+                for explicit_x in explicit_inputs:
+                    for run in (sharded_fun, jax.jit(sharded_fun)):
+                        np.testing.assert_allclose(run(explicit_x), explicit_x**2)
+
+                    out, pullback = jax.vjp(sharded_fun, explicit_x)
+                    cotangent = jax.device_put(jnp.ones_like(out), out.sharding)
+                    np.testing.assert_allclose(
+                        pullback(cotangent)[0],
+                        2 * explicit_x,
+                    )
+                    np.testing.assert_allclose(
+                        jax.jit(jax.grad(lambda y: jnp.sum(sharded_fun(y))))(
+                            explicit_x
+                        ),
+                        2 * explicit_x,
+                    )
+
+                    if supports_jvp:
+                        np.testing.assert_allclose(
+                            jax.jvp(
+                                sharded_fun,
+                                (explicit_x,),
+                                (jnp.ones_like(explicit_x),),
+                            )[1],
+                            2 * explicit_x,
+                        )
+
+            if supports_jvp:
+                scalar_higher_order = lambda y: jnp.sum(
+                    sparse_pullback(
+                        lambda z: z**3,
+                        y,
+                        batch_size=2,
+                        shard_input_data=True,
+                        higher_order=True,
+                    )
+                )
+                grad = jax.grad(scalar_higher_order)
+                np.testing.assert_allclose(grad(x), 3 * x**2)
+                np.testing.assert_allclose(
+                    jax.grad(lambda y: jnp.sum(grad(y)))(x),
+                    6 * x,
+                )
             """)
 
 
@@ -424,7 +575,7 @@ def test_sparse_pullback_legacy_backend():
         jax.__version__ = "0.10.0"
 
         from adv_jax_math import sparse_pullback, sparse_pullback_map
-        from adv_jax_math._derivatives import _USE_HIJAX
+        from adv_jax_math._sparse import _USE_HIJAX
 
         assert not _USE_HIJAX
         x = jnp.arange(1.0, 5.0)

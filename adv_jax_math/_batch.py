@@ -34,6 +34,7 @@ from jax.tree_util import (
     tree_structure,
     tree_transpose,
 )
+from packaging.version import Version
 
 from ._utils import Index, errorif, identity, warnif
 
@@ -64,13 +65,19 @@ except ImportError:
 _HAS_LAX_RESHAPE_OUT_SHARDING = "out_sharding" in signature(jax.lax.reshape).parameters
 
 try:
-    from jax.sharding import reshard
+    from jax.sharding import AxisType, reshard
 except ImportError:
+    AxisType = None
     reshard = None
 
-# Sharded batching is intentionally outside this package's current scope. Keep
-# accepting the compatibility argument, but use the ordinary chunked path.
-_SUPPORTS_SHARDED_BATCHING = False
+# Sharded batching uses automatic mesh axes so that device placement does not
+# leak an explicit mesh into pullback cotangent types. Older JAX versions fall
+# back to ordinary chunking.
+_SUPPORTS_SHARDED_BATCHING = (
+    Version(jax.__version__) >= Version("0.10.2")
+    and AxisType is not None
+    and reshard is not None
+)
 
 _concat = partial(tree_map, lambda y1, y2: jnp.concatenate((y1, y2)))
 _get_first_chunk = partial(tree_map, lambda x: x[0])
@@ -81,17 +88,34 @@ def _reshape_with_sharding(x, shape, spec, mesh=None):
     if mesh is None and isinstance(sharding, NamedSharding):
         mesh = sharding.mesh
     if mesh is not None:
-        return jax.lax.reshape(
-            x,
-            shape,
-            out_sharding=NamedSharding(mesh, spec),
-        )
+        out_sharding = NamedSharding(mesh, spec)
+        if AxisType is not None and AxisType.Auto in mesh.axis_types:
+            return jax.lax.with_sharding_constraint(x.reshape(shape), out_sharding)
+        if _HAS_LAX_RESHAPE_OUT_SHARDING:
+            return jax.lax.reshape(x, shape, out_sharding=out_sharding)
     return x.reshape(shape)
+
+
+def _make_automatic_mesh(num_devices):
+    return jax.make_mesh(
+        (num_devices,),
+        ("x",),
+        axis_types=(AxisType.Auto,),
+    )
 
 
 def _reshard_leaf_to_replicated(x, mesh):
     sharding = NamedSharding(mesh, PartitionSpec(*(None,) * x.ndim))
     return reshard(x, sharding)
+
+
+def _has_explicit_sharding(x):
+    sharding = getattr(jax.typeof(x), "sharding", None)
+    return (
+        AxisType is not None
+        and isinstance(sharding, NamedSharding)
+        and AxisType.Explicit in sharding.mesh.axis_types
+    )
 
 
 def _concat_resharded_to_replicated(x, y, mesh):
@@ -175,7 +199,20 @@ def make_shardable(f, axis=0, num_devices=None):
         num_devices = jax.device_count()
 
     mesh = jax.make_mesh((num_devices,), ("x",))
+    return _make_shardable(f, axis, num_devices, mesh)
+
+
+def _make_shardable(f, axis, num_devices, mesh, *, normalize_explicit=False):
     leaves, treedef = tree_flatten(f)
+    if normalize_explicit:
+        leaves = [
+            (
+                _reshard_leaf_to_replicated(leaf, mesh)
+                if _has_explicit_sharding(leaf)
+                else leaf
+            )
+            for leaf in leaves
+        ]
     out = [_shard(leaf, axis, num_devices, mesh) for leaf in leaves]
     sf = treedef.unflatten(f[0] for f in out)
     rf = treedef.unflatten(f[1] for f in out)
@@ -188,7 +225,11 @@ def _shard(f, axis, num_devices, mesh):
     sf = f[Index.get(slice(0, shardable_size), axis, f.ndim)]
     rf = f[Index.get(slice(shardable_size, f.shape[axis]), axis, f.ndim)]
     P = PartitionSpec(*(None,) * axis, "x", *(None,) * (f.ndim - axis - 1))
-    sf = jax.device_put(sf, NamedSharding(mesh, P))
+    sharding = NamedSharding(mesh, P)
+    if AxisType is not None and AxisType.Auto in mesh.axis_types:
+        sf = jax.lax.with_sharding_constraint(sf, sharding)
+    else:
+        sf = jax.device_put(sf, sharding)
     return sf, rf
 
 
@@ -365,13 +406,34 @@ def _evaluate_sharded(
     *args,
     **kwargs,
 ):
-    args_shardable, args_remainder = zip(
-        *[make_shardable(a) if i in argnums else (a, a) for i, a in enumerate(args)]
+    num_devices = jax.device_count()
+    mesh = _make_automatic_mesh(num_devices)
+    return _evaluate_sharded_on_mesh(
+        fun,
+        chunk_size,
+        argnums,
+        reduction,
+        chunk_reduction,
+        num_devices,
+        mesh,
+        *args,
+        **kwargs,
     )
-    n_shardable = tree_leaves(args_shardable[argnums[0]])[0].shape[0]
-    n_remainder = tree_leaves(args_remainder[argnums[0]])[0].shape[0]
 
-    if n_shardable == 0:
+
+def _evaluate_on_first_device(
+    fun,
+    chunk_size,
+    argnums,
+    reduction,
+    chunk_reduction,
+    mesh,
+    *args,
+    **kwargs,
+):
+    """Evaluate replicated inputs on mesh index zero and broadcast the output."""
+
+    def evaluate(args_):
         return _evaluate_in_chunks(
             fun,
             chunk_size,
@@ -379,12 +441,88 @@ def _evaluate_sharded(
             reduction,
             chunk_reduction,
             False,
-            *args_remainder,
+            *args_,
             **kwargs,
         )
 
-    num_devices = jax.device_count()
-    mesh = jax.make_mesh((num_devices,), ("x",))
+    out_struct = jax.eval_shape(evaluate, args)
+
+    def evaluate_on_first(*args_):
+        out = jax.lax.cond(
+            jax.lax.axis_index("x") == 0,
+            evaluate,
+            lambda _: tree_map(jnp.zeros_like, out_struct),
+            args_,
+        )
+        # Unlike a sum, the transpose of this gather sends output cotangents
+        # back only to the device that evaluated ``fun``. This avoids both
+        # duplicate primal work and duplicate gradient contributions.
+        return tree_map(
+            lambda leaf: jax.lax.all_gather(
+                leaf,
+                "x",
+                axis=0,
+                tiled=False,
+            )[0],
+            out,
+        )
+
+    in_specs = tree_map(lambda _: PartitionSpec(), args)
+    out_specs = tree_map(lambda _: PartitionSpec(), out_struct)
+    out = jax.shard_map(
+        evaluate_on_first,
+        mesh=mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+        axis_names={"x"},
+        # The gather makes every physical result identical, but its varying
+        # transpose is required when this result is joined to sharded output.
+        check_vma=False,
+    )(*args)
+    return out
+
+
+def _evaluate_sharded_on_mesh(
+    fun,
+    chunk_size,
+    argnums,
+    reduction,
+    chunk_reduction,
+    num_devices,
+    mesh,
+    *args,
+    **kwargs,
+):
+    args_shardable, args_remainder = zip(
+        *[
+            (
+                _make_shardable(
+                    a,
+                    0,
+                    num_devices,
+                    mesh,
+                    normalize_explicit=True,
+                )
+                if i in argnums
+                else (a, a)
+            )
+            for i, a in enumerate(args)
+        ]
+    )
+    n_shardable = tree_leaves(args_shardable[argnums[0]])[0].shape[0]
+    n_remainder = tree_leaves(args_remainder[argnums[0]])[0].shape[0]
+
+    if n_shardable == 0:
+        return _evaluate_on_first_device(
+            fun,
+            chunk_size,
+            argnums,
+            reduction,
+            chunk_reduction,
+            mesh,
+            *args_remainder,
+            **kwargs,
+        )
 
     # Global sharded layout: the divisible prefix is partitioned over axis 0.
     if chunk_size is None:
@@ -411,13 +549,13 @@ def _evaluate_sharded(
     if n_remainder == 0:
         return out_shardable
 
-    out_remainder = _evaluate_in_chunks(
+    out_remainder = _evaluate_on_first_device(
         fun,
         chunk_size,
         argnums,
         reduction,
         chunk_reduction,
-        False,
+        mesh,
         *args_remainder,
         **kwargs,
     )
@@ -551,7 +689,12 @@ def vmap_chunked(
         Should apply ``reduction`` along the mapped axis, e.g. ``jnp.add.reduce``.
     shard_input_data : bool
         Whether to shard mapped input data across devices before applying
-        chunked batching. Default is ``False``.
+        chunked batching. The divisible prefix is split across devices; when
+        supplied, ``chunk_size`` bounds the batches processed on each device. A
+        local remainder is evaluated once per device, and a final global
+        remainder is evaluated once overall. The mapped length need not be
+        divisible by either the device count or ``chunk_size``. Default is
+        ``False``.
 
     Returns
     -------
@@ -634,7 +777,11 @@ def batch_map(
         Default is ``False``.
     shard_input_data : bool
         Whether to shard ``fun_input`` across devices before applying chunked
-        batching. Default is ``False``.
+        batching. The divisible prefix is split across devices; when supplied,
+        ``batch_size`` bounds the batches processed on each device. A local
+        remainder is evaluated once per device, and a final global remainder is
+        evaluated once overall. The input length need not be divisible by either
+        the device count or ``batch_size``. Default is ``False``.
 
     Returns
     -------
