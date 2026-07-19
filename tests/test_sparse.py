@@ -1,0 +1,745 @@
+# Copyright (C) 2024 Kaya Unalmis
+# SPDX-License-Identifier: LGPL-3.0
+
+"""Tests for autodiff."""
+
+import os
+import subprocess
+import sys
+import textwrap
+from functools import partial
+from unittest.mock import Mock, patch
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+from packaging import version
+
+from adv_jax_math import sparse_pullback, sparse_pullback_map
+
+_HAS_HIJAX = version.parse(jax.__version__) >= version.parse("0.11.0")
+
+
+def _cube(y):
+    return y**3
+
+
+def _jvp(fn, y, tangent):
+    return jax.jvp(fn, (y,), (tangent,))
+
+
+def _sum_output(fn, y):
+    return jnp.sum(fn(y))
+
+
+def _call_with_a(fn, b, a):
+    return fn({"a": a, "b": b})
+
+
+def _double(x):
+    return 2 * x
+
+
+def _stack_with_double(x):
+    return jnp.stack((x, 2 * x))
+
+
+def _pytree_fun(y):
+    return jnp.sum(jnp.sin(y["a"]) + y["a"] ** 2, axis=1) + jnp.sum(
+        jnp.exp(y["b"]), axis=1
+    )
+
+
+def _scaled_cube(scale, y):
+    return scale * y**3
+
+
+def _sparse_scaled_cube(scale, y):
+    return sparse_pullback(partial(_scaled_cube, scale), y, batch_size=2)
+
+
+def _sparse_scaled_cube_at_fixed_input(scale, y):
+    return sparse_pullback_map(partial(_scaled_cube, scale), y)(y)
+
+
+def _dynamic_closure_jvp(scale, x, tangent):
+    return jax.jvp(partial(_sparse_scaled_cube, scale), (x,), (tangent,))
+
+
+def _dynamic_closure_vjp(scale, x, cotangent):
+    pullback = jax.vjp(partial(_sparse_scaled_cube, scale), x)[1]
+    return pullback(cotangent)[0]
+
+
+def _nested_batched_fun(y):
+    a = y["a"]
+    c = y["b"]["c"]
+    return jnp.sum(jnp.sin(a) + a**2, axis=1) + jnp.sum(jnp.exp(c), axis=1)
+
+
+def _nested_single_fun(y):
+    a = y["a"]
+    c = y["b"]["c"]
+    return jnp.sum(jnp.sin(a) + a**2) + jnp.sum(jnp.exp(c))
+
+
+def _vmap_call(fn, y):
+    return jax.vmap(fn)(y)
+
+
+def _scaled_ones(scale, leaf):
+    return scale * jnp.ones_like(leaf)
+
+
+_SPARSE_PULLBACK_CASES = (
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {},
+        jnp.linspace(0.5, 1.5, 10),
+        id="unbatched",
+    ),
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {"batch_size": 4},
+        jnp.linspace(0.5, 1.5, 10),
+        id="chunked",
+    ),
+    pytest.param(
+        partial(_sum_output, _nested_batched_fun),
+        _nested_batched_fun,
+        {
+            "batch_size": 4,
+            "reduction": jnp.add,
+            "chunk_reduction": jnp.sum,
+        },
+        jnp.array(1.7),
+        id="reduced",
+    ),
+    pytest.param(
+        partial(_vmap_call, _nested_single_fun),
+        _nested_single_fun,
+        {"batch_size": 1, "strip_dim0": True},
+        jnp.linspace(0.5, 1.5, 10),
+        id="stripped",
+    ),
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {"shard_input_data": True},
+        jnp.linspace(0.5, 1.5, 10),
+        id="sharded",
+    ),
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {"batch_size": 4, "shard_input_data": True},
+        jnp.linspace(0.5, 1.5, 10),
+        id="sharded-chunked",
+    ),
+    pytest.param(
+        partial(_sum_output, _nested_batched_fun),
+        _nested_batched_fun,
+        {
+            "batch_size": 4,
+            "reduction": jnp.add,
+            "chunk_reduction": jnp.sum,
+            "shard_input_data": True,
+        },
+        jnp.array(1.7),
+        id="sharded-reduced",
+    ),
+    pytest.param(
+        partial(_vmap_call, _nested_single_fun),
+        _nested_single_fun,
+        {
+            "batch_size": 1,
+            "strip_dim0": True,
+            "shard_input_data": True,
+        },
+        jnp.linspace(0.5, 1.5, 10),
+        id="sharded-stripped",
+    ),
+)
+
+
+def _assert_tree_allclose(got, expected):
+    assert eqx.tree_equal(got, expected, rtol=1e-6, atol=1e-7)
+
+
+def _run_forced_cpu_devices(code, num_devices=4):
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={num_devices}"
+    subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        check=True,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        env=env,
+    )
+
+
+class TestDerivative:
+    """Tests Derivative classes."""
+
+    @pytest.mark.unit
+    def test_sparse_pullback_sharded_chunked(self):
+        """Test sparse_pullback with chunking and sharded input data."""
+        _run_forced_cpu_devices("""
+            from collections import Counter
+
+            import numpy as np
+
+            import adv_jax_math._batch as _batch
+            import jax
+            import jax.numpy as jnp
+            from jax.sharding import NamedSharding, PartitionSpec
+            from packaging import version
+
+            from adv_jax_math import sparse_pullback
+
+            assert jax.device_count() == 4
+            supports_sharding = version.parse(jax.__version__) >= version.parse(
+                "0.10.2"
+            )
+            supports_jvp = version.parse(jax.__version__) >= version.parse("0.11.0")
+            x = jnp.arange(13.0)
+
+            cases = [
+                (
+                    lambda y: sparse_pullback(
+                        lambda z: z**2,
+                        y,
+                        batch_size=2,
+                        shard_input_data=True,
+                    ),
+                    x**2,
+                ),
+                (
+                    lambda y: sparse_pullback(
+                        lambda z: z**2,
+                        y,
+                        shard_input_data=True,
+                    ),
+                    x**2,
+                ),
+                (
+                    lambda y: sparse_pullback(
+                        lambda z: z**2,
+                        y,
+                        batch_size=1,
+                        strip_dim0=True,
+                        shard_input_data=True,
+                    ),
+                    x**2,
+                ),
+                (
+                    lambda y: sparse_pullback(
+                        lambda z: z**2,
+                        y,
+                        batch_size=2,
+                        reduction=jnp.add,
+                        chunk_reduction=jnp.sum,
+                        shard_input_data=True,
+                    ),
+                    jnp.sum(x**2),
+                ),
+            ]
+            for fun, expected in cases:
+                actual = fun(x)
+                np.testing.assert_allclose(actual, expected)
+
+                actual = jax.jit(fun)(x)
+                np.testing.assert_allclose(actual, expected)
+
+                if supports_sharding:
+                    out, pullback = jax.vjp(fun, x)
+                    cotangent = jax.device_put(jnp.ones_like(out), out.sharding)
+                    np.testing.assert_allclose(pullback(cotangent)[0], 2 * x)
+                    np.testing.assert_allclose(
+                        jax.grad(lambda y: jnp.sum(fun(y)))(x),
+                        2 * x,
+                    )
+                    np.testing.assert_allclose(
+                        jax.jit(jax.grad(lambda y: jnp.sum(fun(y))))(x),
+                        2 * x,
+                    )
+
+                if supports_jvp:
+                    tangent = jax.jvp(fun, (x,), (jnp.ones_like(x),))[1]
+                    expected_tangent = 2 * x
+                    if expected.ndim == 0:
+                        expected_tangent = jnp.sum(expected_tangent)
+                    np.testing.assert_allclose(tangent, expected_tangent)
+
+            if supports_sharding:
+                calls = []
+
+                def record(local, *, global_shape):
+                    calls.append((global_shape, tuple(local.shape)))
+
+                def tracked(z):
+                    global_shape = tuple(z.shape)
+                    jax.debug.callback(partitioned=True)(
+                        lambda local, global_shape=global_shape: record(
+                            local, global_shape=global_shape
+                        ),
+                        z,
+                    )
+                    return z**2
+
+                execution_x = jnp.arange(35.0)
+                execution_fun = lambda y: sparse_pullback(
+                    tracked,
+                    y,
+                    batch_size=3,
+                    shard_input_data=True,
+                )
+                actual = jax.jit(execution_fun)(execution_x)
+                actual.block_until_ready()
+                np.testing.assert_allclose(actual, execution_x**2)
+                expected_calls = Counter({
+                    ((12,), (3,)): 8,
+                    ((8,), (2,)): 4,
+                    ((3,), (3,)): 1,
+                })
+                assert Counter(calls) == expected_calls
+
+                calls.clear()
+                gradient = jax.jit(
+                    jax.grad(lambda y: jnp.sum(execution_fun(y)))
+                )(execution_x)
+                gradient.block_until_ready()
+                np.testing.assert_allclose(gradient, 2 * execution_x)
+                assert Counter(calls) == expected_calls
+
+            if supports_sharding:
+                even_x = x[:-1]
+                sharded_fun = lambda y: sparse_pullback(
+                    lambda z: z**2,
+                    y,
+                    batch_size=2,
+                    shard_input_data=True,
+                )
+                original_reshard = _batch._reshard_leaf_to_replicated
+                resharded_inputs = []
+
+                def record_reshard(leaf, mesh):
+                    resharded_inputs.append(leaf)
+                    return original_reshard(leaf, mesh)
+
+                _batch._reshard_leaf_to_replicated = record_reshard
+                try:
+                    for run in (sharded_fun, jax.jit(sharded_fun)):
+                        actual = run(even_x)
+                        np.testing.assert_allclose(actual, even_x**2)
+                        assert not actual.sharding.is_fully_replicated
+                finally:
+                    _batch._reshard_leaf_to_replicated = original_reshard
+                assert not resharded_inputs
+
+                caller_mesh = jax.make_mesh((4,), ("caller",))
+                explicit_inputs = (
+                    jax.device_put(
+                        even_x,
+                        NamedSharding(caller_mesh, PartitionSpec("caller")),
+                    ),
+                    jax.device_put(
+                        x,
+                        NamedSharding(caller_mesh, PartitionSpec()),
+                    ),
+                )
+                for explicit_x in explicit_inputs:
+                    for run in (sharded_fun, jax.jit(sharded_fun)):
+                        np.testing.assert_allclose(run(explicit_x), explicit_x**2)
+
+                    out, pullback = jax.vjp(sharded_fun, explicit_x)
+                    cotangent = jax.device_put(jnp.ones_like(out), out.sharding)
+                    np.testing.assert_allclose(
+                        pullback(cotangent)[0],
+                        2 * explicit_x,
+                    )
+                    np.testing.assert_allclose(
+                        jax.jit(jax.grad(lambda y: jnp.sum(sharded_fun(y))))(
+                            explicit_x
+                        ),
+                        2 * explicit_x,
+                    )
+
+                    if supports_jvp:
+                        np.testing.assert_allclose(
+                            jax.jvp(
+                                sharded_fun,
+                                (explicit_x,),
+                                (jnp.ones_like(explicit_x),),
+                            )[1],
+                            2 * explicit_x,
+                        )
+
+            if supports_jvp:
+                scalar_higher_order = lambda y: jnp.sum(
+                    sparse_pullback(
+                        lambda z: z**3,
+                        y,
+                        batch_size=2,
+                        shard_input_data=True,
+                        higher_order=True,
+                    )
+                )
+                grad = jax.grad(scalar_higher_order)
+                np.testing.assert_allclose(grad(x), 3 * x**2)
+                np.testing.assert_allclose(
+                    jax.grad(lambda y: jnp.sum(grad(y)))(x),
+                    6 * x,
+                )
+            """)
+
+
+@pytest.mark.unit
+def test_sparse_pullback_map():
+    """Functional sparse-pullback wrappers should preserve values and VJPs."""
+    x = jnp.arange(1.0, 5.0)
+    wrapped = sparse_pullback_map(_cube, x)
+
+    out, pullback = jax.vjp(wrapped, x)
+
+    np.testing.assert_allclose(out, x**3)
+    np.testing.assert_allclose(pullback(jnp.ones_like(out))[0], 3 * x**2)
+
+
+@pytest.mark.unit
+def test_sparse_pullback_preserves_none_cotangent_leaves():
+    """Nondifferentiable leaves should remain absent from sparse cotangents."""
+    from adv_jax_math._sparse import _mul_cotangent
+
+    assert _mul_cotangent(None, g=jnp.array(1.0)) is None
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+def test_sparse_pullback_hijax_jvp_and_linearize():
+    """The HiJAX backend should contract and reuse pytree linearizations."""
+    x = {
+        "a": jnp.linspace(-1.0, 1.0, 12).reshape(4, 3),
+        "b": jnp.linspace(0.1, 0.8, 8).reshape(4, 2),
+    }
+    tangent = {
+        "a": jnp.linspace(0.2, 0.8, 12).reshape(4, 3),
+        "b": jnp.linspace(-0.3, 0.4, 8).reshape(4, 2),
+    }
+
+    wrapped = sparse_pullback_map(_pytree_fun, x)
+    expected_out, expected_tangent = jax.jvp(_pytree_fun, (x,), (tangent,))
+    out, out_tangent = jax.jvp(wrapped, (x,), (tangent,))
+    assert eqx.tree_equal(out, expected_out, rtol=1e-6, atol=1e-7)
+    assert eqx.tree_equal(out_tangent, expected_tangent, rtol=1e-6, atol=1e-7)
+
+    only_a = partial(_call_with_a, wrapped, x["b"])
+    partial_out, partial_tangent = jax.jvp(
+        only_a,
+        (x["a"],),
+        (tangent["a"],),
+    )
+    expected_partial_tangent = jnp.sum(
+        (jnp.cos(x["a"]) + 2 * x["a"]) * tangent["a"],
+        axis=1,
+    )
+    assert eqx.tree_equal(partial_out, expected_out, rtol=1e-6, atol=1e-7)
+    assert eqx.tree_equal(
+        partial_tangent,
+        expected_partial_tangent,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+    cotangent = jnp.linspace(0.5, 1.5, 4)
+    partial_pullback = jax.vjp(only_a, x["a"])[1]
+    expected_partial_pullback = (jnp.cos(x["a"]) + 2 * x["a"]) * cotangent[:, None]
+    assert eqx.tree_equal(
+        partial_pullback(cotangent)[0],
+        expected_partial_pullback,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    out, pushforward = jax.linearize(wrapped, x)
+    assert eqx.tree_equal(out, expected_out, rtol=1e-6, atol=1e-7)
+    assert eqx.tree_equal(pushforward(tangent), expected_tangent, rtol=1e-6, atol=1e-7)
+    assert eqx.tree_equal(
+        pushforward(jax.tree.map(_double, tangent)),
+        2 * expected_tangent,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+    tangent_batch = jax.tree.map(_stack_with_double, tangent)
+    assert eqx.tree_equal(
+        jax.vmap(pushforward)(tangent_batch),
+        jnp.stack((expected_tangent, 2 * expected_tangent)),
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+def test_sparse_pullback_hijax_jacobians():
+    """Jacobian APIs should compose the reusable pushforward and pullback."""
+    x = jnp.arange(1.0, 5.0)
+    wrapped = sparse_pullback_map(_cube, x)
+    expected = jnp.diag(3 * x**2)
+
+    np.testing.assert_allclose(jax.jacfwd(wrapped)(x), expected)
+    np.testing.assert_allclose(jax.jacrev(wrapped)(x), expected)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+def test_sparse_pullback_hijax_higher_order():
+    """Higher-order mode should rebind the primal and compose derivatives."""
+    from adv_jax_math._sparse import _SparsePullbackPrimitive
+
+    x = jnp.arange(1.0, 5.0)
+    wrapped = sparse_pullback_map(_cube, x, higher_order=True)
+
+    with patch.object(
+        _SparsePullbackPrimitive,
+        "expand",
+        autospec=True,
+        wraps=_SparsePullbackPrimitive.expand,
+    ) as expand:
+        out, pullback = jax.vjp(wrapped, x)
+
+    np.testing.assert_allclose(out, x**3)
+    np.testing.assert_allclose(pullback(jnp.ones_like(out))[0], 3 * x**2)
+    assert expand.call_count == 1
+
+    expected_hessian = jnp.diag(6 * x)
+    scalar = partial(_sum_output, wrapped)
+    np.testing.assert_allclose(
+        jax.jacrev(jax.grad(scalar))(x),
+        expected_hessian,
+    )
+    np.testing.assert_allclose(
+        jax.hessian(scalar)(x),
+        expected_hessian,
+    )
+
+    chunked = partial(
+        sparse_pullback,
+        _cube,
+        batch_size=2,
+        higher_order=True,
+    )
+    np.testing.assert_allclose(
+        jax.hessian(partial(_sum_output, chunked))(x),
+        expected_hessian,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+def test_sparse_pullback_hijax_vmap():
+    """The primitive should support mapped and unmapped batching inputs."""
+    x = jnp.arange(1.0, 5.0)
+    wrapped = sparse_pullback_map(_cube, x)
+    xs = jnp.stack((x, 2 * x))
+    tangents = jnp.ones_like(xs)
+
+    np.testing.assert_allclose(jax.vmap(wrapped)(xs), xs**3)
+    _, tangent_out = jax.vmap(partial(_jvp, wrapped))(xs, tangents)
+    np.testing.assert_allclose(tangent_out, 3 * xs**2)
+    np.testing.assert_allclose(
+        jax.vmap(jax.grad(partial(_sum_output, wrapped)))(xs),
+        3 * xs**2,
+    )
+    vmapped = partial(_vmap_call, wrapped)
+    np.testing.assert_allclose(
+        jax.grad(partial(_sum_output, vmapped))(xs),
+        3 * xs**2,
+    )
+    np.testing.assert_allclose(
+        jax.vmap(wrapped, in_axes=1, out_axes=1)(xs.T),
+        (xs.T) ** 3,
+    )
+    np.testing.assert_allclose(
+        jax.vmap(partial(wrapped, x), in_axes=(), out_axes=None, axis_size=2)(),
+        x**3,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+def test_sparse_pullback_hijax_reuses_diagonal(monkeypatch):
+    """Linearized and transposed calls should not recompute the diagonal."""
+    from adv_jax_math._sparse import _SparsePullbackPrimitive
+
+    filter_vjp = Mock(wraps=eqx.filter_vjp)
+    expand = Mock(wraps=_SparsePullbackPrimitive.expand)
+    monkeypatch.setattr(eqx, "filter_vjp", filter_vjp)
+    monkeypatch.setattr(_SparsePullbackPrimitive, "expand", expand)
+
+    x = jnp.arange(1.0, 5.0)
+    tangent = jnp.linspace(0.1, 0.4, 4)
+    cotangent = jnp.linspace(0.5, 1.1, 4)
+    wrapped = sparse_pullback_map(_cube, x)
+
+    _, pushforward = jax.linearize(wrapped, x)
+    assert filter_vjp.call_count == 1
+    assert expand.call_count == 0
+    np.testing.assert_allclose(pushforward(tangent), 3 * x**2 * tangent)
+    np.testing.assert_allclose(pushforward(2 * tangent), 6 * x**2 * tangent)
+    np.testing.assert_allclose(
+        jax.vmap(pushforward)(jnp.stack((tangent, 2 * tangent))),
+        jnp.stack((3 * x**2 * tangent, 6 * x**2 * tangent)),
+    )
+    assert filter_vjp.call_count == 1
+    assert expand.call_count == 0
+
+    filter_vjp.reset_mock()
+    expand.reset_mock()
+    _, pullback = jax.vjp(wrapped, x)
+    assert filter_vjp.call_count == 1
+    assert expand.call_count == 0
+    np.testing.assert_allclose(pullback(cotangent)[0], 3 * x**2 * cotangent)
+    np.testing.assert_allclose(pullback(2 * cotangent)[0], 6 * x**2 * cotangent)
+    np.testing.assert_allclose(
+        jax.vmap(pullback)(jnp.stack((cotangent, 2 * cotangent)))[0],
+        jnp.stack((3 * x**2 * cotangent, 6 * x**2 * cotangent)),
+    )
+    assert filter_vjp.call_count == 1
+    assert expand.call_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+def test_sparse_pullback_hijax_jit_with_dynamic_closure():
+    """Array-valued function closures should remain dynamic under JIT."""
+    x = jnp.arange(1.0, 5.0)
+    tangent = jnp.linspace(0.1, 0.4, 4)
+    cotangent = jnp.linspace(0.5, 1.1, 4)
+    scale = jnp.array(1.7)
+
+    out, out_tangent = jax.jit(_dynamic_closure_jvp)(scale, x, tangent)
+    np.testing.assert_allclose(out, scale * x**3)
+    np.testing.assert_allclose(out_tangent, scale * 3 * x**2 * tangent)
+
+    np.testing.assert_allclose(
+        jax.jit(_dynamic_closure_vjp)(scale, x, cotangent),
+        scale * 3 * x**2 * cotangent,
+    )
+
+    closure_only = partial(_sparse_scaled_cube_at_fixed_input, y=x)
+    out, out_tangent = jax.jvp(
+        closure_only,
+        (scale,),
+        (jnp.ones_like(scale),),
+    )
+    np.testing.assert_allclose(out, scale * x**3)
+    np.testing.assert_allclose(out_tangent, jnp.zeros_like(out))
+
+    out, pushforward = jax.linearize(closure_only, scale)
+    np.testing.assert_allclose(out, scale * x**3)
+    np.testing.assert_allclose(
+        pushforward(jnp.ones_like(scale)),
+        jnp.zeros_like(out),
+    )
+
+
+@pytest.mark.unit
+def test_sparse_pullback_legacy_backend():
+    """The custom-VJP backend should retain higher-order differentiation."""
+    _run_forced_cpu_devices(
+        """
+        import numpy as np
+
+        import jax
+        import jax.numpy as jnp
+
+        jax.__version__ = "0.10.0"
+
+        from adv_jax_math import sparse_pullback, sparse_pullback_map
+
+        x = jnp.arange(1.0, 5.0)
+        wrapped = sparse_pullback_map(lambda y: y**3, x, higher_order=True)
+        out, pullback = jax.vjp(wrapped, x)
+        np.testing.assert_allclose(out, x**3)
+        np.testing.assert_allclose(
+            pullback(jnp.ones_like(out))[0],
+            3 * x**2,
+        )
+
+        try:
+            jax.jvp(wrapped, (x,), (jnp.ones_like(x),))
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("legacy custom VJP unexpectedly supported JVP")
+
+        for transformed in (
+            wrapped,
+            lambda y: sparse_pullback(
+                lambda z: z**3,
+                y,
+                batch_size=2,
+                higher_order=True,
+            ),
+        ):
+            scalar = lambda y: jnp.sum(transformed(y))
+            gradient = jax.grad(scalar)
+            np.testing.assert_allclose(gradient(x), 3 * x**2)
+            np.testing.assert_allclose(
+                jax.grad(lambda y: jnp.sum(gradient(y)))(x),
+                6 * x,
+            )
+            np.testing.assert_allclose(jax.hessian(scalar)(x), jnp.diag(6 * x))
+        """,
+        num_devices=1,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("dense", "sparse_fun", "sparse_kwargs", "cotangent"),
+    _SPARSE_PULLBACK_CASES,
+)
+def test_sparse_pullback_vjp(dense, sparse_fun, sparse_kwargs, cotangent):
+    """Sparse pullbacks should match dense pullbacks across batching modes."""
+    x = {
+        "a": jnp.linspace(-1, 1, 10 * 7).reshape(10, 7),
+        "b": {"c": jnp.linspace(0.1, 0.9, 10 * 5).reshape(10, 5)},
+    }
+    sparse = partial(sparse_pullback, sparse_fun, **sparse_kwargs)
+
+    out, pullback = jax.vjp(dense, x)
+    got_out, got_pullback = jax.vjp(sparse, x)
+    _assert_tree_allclose(got_out, out)
+    _assert_tree_allclose(got_pullback(cotangent)[0], pullback(cotangent)[0])
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+@pytest.mark.parametrize(
+    ("dense", "sparse_fun", "sparse_kwargs", "_cotangent"),
+    _SPARSE_PULLBACK_CASES,
+)
+def test_sparse_pullback_jvp(dense, sparse_fun, sparse_kwargs, _cotangent):
+    """Sparse pushforwards should match dense pushforwards across batching modes."""
+    x = {
+        "a": jnp.linspace(-1, 1, 10 * 7).reshape(10, 7),
+        "b": {"c": jnp.linspace(0.1, 0.9, 10 * 5).reshape(10, 5)},
+    }
+    tangent = jax.tree.map(partial(_scaled_ones, 0.37), x)
+    sparse = partial(sparse_pullback, sparse_fun, **sparse_kwargs)
+
+    expected_out, expected_tangent = jax.jvp(dense, (x,), (tangent,))
+    got_out, got_tangent = jax.jvp(sparse, (x,), (tangent,))
+    _assert_tree_allclose(got_out, expected_out)
+    np.testing.assert_allclose(
+        got_tangent,
+        expected_tangent,
+        rtol=1e-6,
+        atol=1e-7,
+    )

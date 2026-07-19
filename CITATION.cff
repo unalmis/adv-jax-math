@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+title: adv-jax-math
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Kaya
+    family-names: Unalmis
+    email: kunalmis@stanford.edu
+    affiliation: Stanford University
+    orcid: 'https://orcid.org/0000-0002-1755-6764'
+identifiers:
+  - type: url
+    value: 'https://github.com/unalmis/adv-jax-math'
+    description: 'GitHub repository for adv-jax-math'
+repository-code: 'https://github.com/unalmis/adv-jax-math'
+url: 'https://unalmis.github.io/adv-jax-math/'
+repository-artifact: 'https://pypi.org/project/adv-jax-math/'
+license: LGPL-3.0

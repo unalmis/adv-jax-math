@@ -1,0 +1,6 @@
+include versioneer.py
+include adv_jax_math/_version.py
+
+include LICENSE
+include README.rst pyproject.toml setup.py setup.cfg requirements.txt
+global-exclude __pycache__ *.py[cod] .venv
