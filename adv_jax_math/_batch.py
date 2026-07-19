@@ -109,6 +109,15 @@ def _reshard_leaf_to_replicated(x, mesh):
     return reshard(x, sharding)
 
 
+def _has_explicit_sharding(x):
+    sharding = getattr(jax.typeof(x), "sharding", None)
+    return (
+        AxisType is not None
+        and isinstance(sharding, NamedSharding)
+        and AxisType.Explicit in sharding.mesh.axis_types
+    )
+
+
 def _concat_resharded_to_replicated(x, y, mesh):
     return _concat(
         tree_map(lambda leaf: _reshard_leaf_to_replicated(leaf, mesh), x),
@@ -139,21 +148,15 @@ def _scan_reduce(
     f,
     x,
     reduction=None,
-    carry_init_fun=None,
+    carry_init_fun=partial(tree_map, lambda x: jnp.zeros_like(x)),
 ):
     """Evaluate f element-wise in x while reducing the results."""
 
     def body(carry, x):
         return reduction(carry, f(x)), None
 
-    first = _get_first_chunk(x)
-    if carry_init_fun is not None:
-        carry_init = carry_init_fun(jax.eval_shape(f, first))
-        scan_x = x
-    else:
-        carry_init = f(first)
-        scan_x = tree_map(lambda leaf: leaf[1:], x)
-    result, _ = scan(body, carry_init, scan_x)
+    carry_init = carry_init_fun(jax.eval_shape(f, _get_first_chunk(x)))
+    result, _ = scan(body, carry_init, x)
     return result
 
 
@@ -199,10 +202,17 @@ def make_shardable(f, axis=0, num_devices=None):
     return _make_shardable(f, axis, num_devices, mesh)
 
 
-def _make_shardable(f, axis, num_devices, mesh, *, replicate_input=False):
+def _make_shardable(f, axis, num_devices, mesh, *, normalize_explicit=False):
     leaves, treedef = tree_flatten(f)
-    if replicate_input:
-        leaves = [_reshard_leaf_to_replicated(leaf, mesh) for leaf in leaves]
+    if normalize_explicit:
+        leaves = [
+            (
+                _reshard_leaf_to_replicated(leaf, mesh)
+                if _has_explicit_sharding(leaf)
+                else leaf
+            )
+            for leaf in leaves
+        ]
     out = [_shard(leaf, axis, num_devices, mesh) for leaf in leaves]
     sf = treedef.unflatten(f[0] for f in out)
     rf = treedef.unflatten(f[1] for f in out)
@@ -215,7 +225,11 @@ def _shard(f, axis, num_devices, mesh):
     sf = f[Index.get(slice(0, shardable_size), axis, f.ndim)]
     rf = f[Index.get(slice(shardable_size, f.shape[axis]), axis, f.ndim)]
     P = PartitionSpec(*(None,) * axis, "x", *(None,) * (f.ndim - axis - 1))
-    sf = jax.device_put(sf, NamedSharding(mesh, P))
+    sharding = NamedSharding(mesh, P)
+    if AxisType is not None and AxisType.Auto in mesh.axis_types:
+        sf = jax.lax.with_sharding_constraint(sf, sharding)
+    else:
+        sf = jax.device_put(sf, sharding)
     return sf, rf
 
 
@@ -426,7 +440,7 @@ def _evaluate_sharded_on_mesh(
                     0,
                     num_devices,
                     mesh,
-                    replicate_input=True,
+                    normalize_explicit=True,
                 )
                 if i in argnums
                 else (a, a)

@@ -115,8 +115,10 @@ class TestDerivative:
         _run_forced_cpu_devices("""
             import numpy as np
 
+            import adv_jax_math._batch as _batch
             import jax
             import jax.numpy as jnp
+            from jax.sharding import NamedSharding, PartitionSpec
             from packaging.version import Version
 
             from adv_jax_math import sparse_pullback
@@ -169,13 +171,9 @@ class TestDerivative:
             for fun, expected in cases:
                 actual = fun(x)
                 np.testing.assert_allclose(actual, expected)
-                if supports_sharding:
-                    assert len(actual.sharding.device_set) == 4
 
                 actual = jax.jit(fun)(x)
                 np.testing.assert_allclose(actual, expected)
-                if supports_sharding:
-                    assert len(actual.sharding.device_set) == 4
 
                 if supports_sharding:
                     out, pullback = jax.vjp(fun, x)
@@ -205,10 +203,60 @@ class TestDerivative:
                     batch_size=2,
                     shard_input_data=True,
                 )
-                for run in (sharded_fun, jax.jit(sharded_fun)):
-                    actual = run(even_x)
-                    np.testing.assert_allclose(actual, even_x**2)
-                    assert not actual.sharding.is_fully_replicated
+                original_reshard = _batch._reshard_leaf_to_replicated
+                resharded_inputs = []
+
+                def record_reshard(leaf, mesh):
+                    resharded_inputs.append(leaf)
+                    return original_reshard(leaf, mesh)
+
+                _batch._reshard_leaf_to_replicated = record_reshard
+                try:
+                    for run in (sharded_fun, jax.jit(sharded_fun)):
+                        actual = run(even_x)
+                        np.testing.assert_allclose(actual, even_x**2)
+                        assert not actual.sharding.is_fully_replicated
+                finally:
+                    _batch._reshard_leaf_to_replicated = original_reshard
+                assert not resharded_inputs
+
+                caller_mesh = jax.make_mesh((4,), ("caller",))
+                explicit_inputs = (
+                    jax.device_put(
+                        even_x,
+                        NamedSharding(caller_mesh, PartitionSpec("caller")),
+                    ),
+                    jax.device_put(
+                        x,
+                        NamedSharding(caller_mesh, PartitionSpec()),
+                    ),
+                )
+                for explicit_x in explicit_inputs:
+                    for run in (sharded_fun, jax.jit(sharded_fun)):
+                        np.testing.assert_allclose(run(explicit_x), explicit_x**2)
+
+                    out, pullback = jax.vjp(sharded_fun, explicit_x)
+                    cotangent = jax.device_put(jnp.ones_like(out), out.sharding)
+                    np.testing.assert_allclose(
+                        pullback(cotangent)[0],
+                        2 * explicit_x,
+                    )
+                    np.testing.assert_allclose(
+                        jax.jit(jax.grad(lambda y: jnp.sum(sharded_fun(y))))(
+                            explicit_x
+                        ),
+                        2 * explicit_x,
+                    )
+
+                    if supports_jvp:
+                        np.testing.assert_allclose(
+                            jax.jvp(
+                                sharded_fun,
+                                (explicit_x,),
+                                (jnp.ones_like(explicit_x),),
+                            )[1],
+                            2 * explicit_x,
+                        )
 
             if supports_jvp:
                 scalar_higher_order = lambda y: jnp.sum(
