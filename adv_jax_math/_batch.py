@@ -199,7 +199,12 @@ def make_shardable(f, axis=0, num_devices=None):
 
     """
     num_devices = jax.device_count() if num_devices is None else num_devices
-    mesh = jax.make_mesh((num_devices,), ("x",))
+    mesh_kwargs = (
+        {"axis_types": (jax.sharding.AxisType.Auto,)}
+        if Version("0.8.1") <= Version(jax.__version__) < Version("0.9.0")
+        else {}
+    )
+    mesh = jax.make_mesh((num_devices,), ("x",), **mesh_kwargs)
     return _make_shardable(f, axis, num_devices, mesh)
 
 

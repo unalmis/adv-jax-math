@@ -715,7 +715,7 @@ def test_sparse_pullback_vjp(dense, sparse_fun, sparse_kwargs, cotangent):
 
     out, pullback = jax.vjp(dense, x)
     got_out, got_pullback = jax.vjp(sparse, x)
-    np.testing.assert_allclose(got_out, out)
+    _assert_tree_allclose(got_out, out)
     _assert_tree_allclose(got_pullback(cotangent)[0], pullback(cotangent)[0])
 
 
@@ -736,7 +736,7 @@ def test_sparse_pullback_jvp(dense, sparse_fun, sparse_kwargs, _cotangent):
 
     expected_out, expected_tangent = jax.jvp(dense, (x,), (tangent,))
     got_out, got_tangent = jax.jvp(sparse, (x,), (tangent,))
-    np.testing.assert_allclose(got_out, expected_out)
+    _assert_tree_allclose(got_out, expected_out)
     np.testing.assert_allclose(
         got_tangent,
         expected_tangent,
