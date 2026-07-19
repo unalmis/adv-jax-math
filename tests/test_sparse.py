@@ -113,6 +113,8 @@ class TestDerivative:
     def test_sparse_pullback_sharded_chunked(self):
         """Test sparse_pullback with chunking and sharded input data."""
         _run_forced_cpu_devices("""
+            from collections import Counter
+
             import numpy as np
 
             import adv_jax_math._batch as _batch
@@ -194,6 +196,47 @@ class TestDerivative:
                     if expected.ndim == 0:
                         expected_tangent = jnp.sum(expected_tangent)
                     np.testing.assert_allclose(tangent, expected_tangent)
+
+            if supports_sharding:
+                calls = []
+
+                def record(local, *, global_shape):
+                    calls.append((global_shape, tuple(local.shape)))
+
+                def tracked(z):
+                    global_shape = tuple(z.shape)
+                    jax.debug.callback(partitioned=True)(
+                        lambda local, global_shape=global_shape: record(
+                            local, global_shape=global_shape
+                        ),
+                        z,
+                    )
+                    return z**2
+
+                execution_x = jnp.arange(35.0)
+                execution_fun = lambda y: sparse_pullback(
+                    tracked,
+                    y,
+                    batch_size=3,
+                    shard_input_data=True,
+                )
+                actual = jax.jit(execution_fun)(execution_x)
+                actual.block_until_ready()
+                np.testing.assert_allclose(actual, execution_x**2)
+                expected_calls = Counter({
+                    ((12,), (3,)): 8,
+                    ((8,), (2,)): 4,
+                    ((3,), (3,)): 1,
+                })
+                assert Counter(calls) == expected_calls
+
+                calls.clear()
+                gradient = jax.jit(
+                    jax.grad(lambda y: jnp.sum(execution_fun(y)))
+                )(execution_x)
+                gradient.block_until_ready()
+                np.testing.assert_allclose(gradient, 2 * execution_x)
+                assert Counter(calls) == expected_calls
 
             if supports_sharding:
                 even_x = x[:-1]

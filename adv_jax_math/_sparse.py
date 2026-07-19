@@ -254,7 +254,11 @@ def sparse_pullback(
         Default is ``False``.
     shard_input_data : bool
         Whether to shard ``y`` across devices before applying chunked batching.
-        Default is ``False``.
+        The divisible prefix is split across devices; when supplied,
+        ``batch_size`` bounds the batches processed on each device. A local
+        remainder is evaluated once per device, and a final global remainder is
+        evaluated once overall. The input length need not be divisible by either
+        the device count or ``batch_size``. Default is ``False``.
     higher_order : bool
         Whether to support higher order differentiation (on JAX versions
         0.11+) at the expense of evaluating the primal ``fn`` twice.

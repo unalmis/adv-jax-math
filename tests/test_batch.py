@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from adv_jax_math import (
+from adv_jax_math._batch import (
     batch_map,
     batched_vectorize,
     jacfwd_chunked,
@@ -102,7 +102,7 @@ def test_argnums_partial2_fallback():
         if hasattr(api_util, "argnums_partial2"):
             del api_util.argnums_partial2
 
-        from adv_jax_math import jacfwd_chunked, jacrev_chunked
+        from adv_jax_math._batch import jacfwd_chunked, jacrev_chunked
 
         def fun(x, y, *, scale):
             return scale * jnp.array([x * y, x + 2 * y])
@@ -211,12 +211,15 @@ def test_batched_vectorize_matches_jax_rank_promotion_policy():
 def test_sharded_chunked_batching():
     """Test chunked batching with sharded input data."""
     _run_forced_cpu_devices("""
+        from collections import Counter
+
         import numpy as np
 
         import jax
         import jax.numpy as jnp
+        from packaging.version import Version
 
-        from adv_jax_math import batch_map, vmap_chunked
+        from adv_jax_math._batch import batch_map, vmap_chunked
 
         assert jax.device_count() == 4
         x = jnp.arange(13.0)
@@ -286,6 +289,38 @@ def test_sharded_chunked_batching():
         )(y, z)
         np.testing.assert_allclose(two_inputs(x, x[::-1]), x - x[::-1])
         np.testing.assert_allclose(jax.jit(two_inputs)(x, x[::-1]), x - x[::-1])
+
+        if Version(jax.__version__) >= Version("0.10.2"):
+            calls = []
+
+            def record(local, *, global_shape):
+                calls.append((global_shape, tuple(local.shape)))
+
+            def tracked(z):
+                global_shape = tuple(z.shape)
+                jax.debug.callback(partitioned=True)(
+                    lambda local, global_shape=global_shape: record(
+                        local, global_shape=global_shape
+                    ),
+                    z,
+                )
+                return z + 1
+
+            execution_x = jnp.arange(35.0)
+            execution_fun = lambda y: batch_map(
+                tracked,
+                y,
+                batch_size=3,
+                shard_input_data=True,
+            )
+            actual = jax.jit(execution_fun)(execution_x)
+            actual.block_until_ready()
+            np.testing.assert_allclose(actual, execution_x + 1)
+            assert Counter(calls) == Counter({
+                ((12,), (3,)): 8,
+                ((8,), (2,)): 4,
+                ((3,), (3,)): 1,
+            })
         """)
 
 
@@ -298,7 +333,7 @@ def test_make_shardable():
         import jax
         import jax.numpy as jnp
 
-        from adv_jax_math import make_shardable
+        from adv_jax_math._batch import make_shardable
 
         assert jax.device_count() == 4
 

@@ -421,6 +421,67 @@ def _evaluate_sharded(
     )
 
 
+def _evaluate_on_first_device(
+    fun,
+    chunk_size,
+    argnums,
+    reduction,
+    chunk_reduction,
+    mesh,
+    *args,
+    **kwargs,
+):
+    """Evaluate replicated inputs on mesh index zero and broadcast the output."""
+
+    def evaluate(args_):
+        return _evaluate_in_chunks(
+            fun,
+            chunk_size,
+            argnums,
+            reduction,
+            chunk_reduction,
+            False,
+            *args_,
+            **kwargs,
+        )
+
+    out_struct = jax.eval_shape(evaluate, args)
+
+    def evaluate_on_first(*args_):
+        out = jax.lax.cond(
+            jax.lax.axis_index("x") == 0,
+            evaluate,
+            lambda _: tree_map(jnp.zeros_like, out_struct),
+            args_,
+        )
+        # Unlike a sum, the transpose of this gather sends output cotangents
+        # back only to the device that evaluated ``fun``. This avoids both
+        # duplicate primal work and duplicate gradient contributions.
+        return tree_map(
+            lambda leaf: jax.lax.all_gather(
+                leaf,
+                "x",
+                axis=0,
+                tiled=False,
+            )[0],
+            out,
+        )
+
+    in_specs = tree_map(lambda _: PartitionSpec(), args)
+    out_specs = tree_map(lambda _: PartitionSpec(), out_struct)
+    out = jax.shard_map(
+        evaluate_on_first,
+        mesh=mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+        axis_names={"x"},
+        # The gather makes every physical result identical, but its varying
+        # transpose is required when this result is joined to sharded output.
+        check_vma=False,
+    )(*args)
+    return out
+
+
 def _evaluate_sharded_on_mesh(
     fun,
     chunk_size,
@@ -452,13 +513,13 @@ def _evaluate_sharded_on_mesh(
     n_remainder = tree_leaves(args_remainder[argnums[0]])[0].shape[0]
 
     if n_shardable == 0:
-        return _evaluate_in_chunks(
+        return _evaluate_on_first_device(
             fun,
             chunk_size,
             argnums,
             reduction,
             chunk_reduction,
-            False,
+            mesh,
             *args_remainder,
             **kwargs,
         )
@@ -488,13 +549,13 @@ def _evaluate_sharded_on_mesh(
     if n_remainder == 0:
         return out_shardable
 
-    out_remainder = _evaluate_in_chunks(
+    out_remainder = _evaluate_on_first_device(
         fun,
         chunk_size,
         argnums,
         reduction,
         chunk_reduction,
-        False,
+        mesh,
         *args_remainder,
         **kwargs,
     )
@@ -628,7 +689,12 @@ def vmap_chunked(
         Should apply ``reduction`` along the mapped axis, e.g. ``jnp.add.reduce``.
     shard_input_data : bool
         Whether to shard mapped input data across devices before applying
-        chunked batching. Default is ``False``.
+        chunked batching. The divisible prefix is split across devices; when
+        supplied, ``chunk_size`` bounds the batches processed on each device. A
+        local remainder is evaluated once per device, and a final global
+        remainder is evaluated once overall. The mapped length need not be
+        divisible by either the device count or ``chunk_size``. Default is
+        ``False``.
 
     Returns
     -------
@@ -711,7 +777,11 @@ def batch_map(
         Default is ``False``.
     shard_input_data : bool
         Whether to shard ``fun_input`` across devices before applying chunked
-        batching. Default is ``False``.
+        batching. The divisible prefix is split across devices; when supplied,
+        ``batch_size`` bounds the batches processed on each device. A local
+        remainder is evaluated once per device, and a final global remainder is
+        evaluated once overall. The input length need not be divisible by either
+        the device count or ``batch_size``. Default is ``False``.
 
     Returns
     -------
