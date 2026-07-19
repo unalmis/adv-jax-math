@@ -198,9 +198,7 @@ def make_shardable(f, axis=0, num_devices=None):
         Remainder portion of ``f``.
 
     """
-    if num_devices is None:
-        num_devices = jax.device_count()
-
+    num_devices = jax.device_count() if num_devices is None else num_devices
     mesh = jax.make_mesh((num_devices,), ("x",))
     return _make_shardable(f, axis, num_devices, mesh)
 
@@ -579,8 +577,7 @@ def _evaluate_in_chunks(
     *args,
     **kwargs,
 ):
-    if shard_input_data and not _SUPPORTS_SHARDED_BATCHING:
-        shard_input_data = False
+    shard_input_data = shard_input_data and _SUPPORTS_SHARDED_BATCHING
 
     if shard_input_data:
         return _evaluate_sharded(
@@ -624,8 +621,7 @@ def _evaluate_in_chunks(
 
 
 def _parse_in_axes(in_axes):
-    if isinstance(in_axes, int):
-        in_axes = (in_axes,)
+    in_axes = (in_axes,) if isinstance(in_axes, int) else in_axes
 
     errorif(
         not set(in_axes).issubset((0, None)),
@@ -894,7 +890,7 @@ def batched_vectorize(  # noqa: C901
             output_core_dims = None
 
         none_args = {i for i, arg in enumerate(args) if arg is None}
-        if any(none_args):
+        if none_args:
             errorif(
                 any(input_core_dims[i] != () for i in none_args),
                 msg=f"Cannot pass None at locations {none_args} with {signature=}",
@@ -910,12 +906,13 @@ def batched_vectorize(  # noqa: C901
             args, input_core_dims, error_context
         )
 
-        if output_core_dims is None:
-            checked_func = excluded_func
-        else:
-            checked_func = _check_output_dims(
+        checked_func = (
+            excluded_func
+            if output_core_dims is None
+            else _check_output_dims(
                 excluded_func, dim_sizes, output_core_dims, error_context
             )
+        )
 
         # Detect implicit rank promotion.
         if config.numpy_rank_promotion.value != "allow":
@@ -1051,10 +1048,7 @@ def jacfwd_chunked(
         tree_map(partial(_check_output_dtype_jacfwd, holomorphic), y)
         example_args = dyn_args[0] if isinstance(argnums, int) else dyn_args
         jac_tree = tree_map(partial(_jacfwd_unravel, example_args), y, jac)
-        if not has_aux:
-            return jac_tree
-        else:
-            return jac_tree, aux
+        return (jac_tree, aux) if has_aux else jac_tree
 
     return jacfun
 

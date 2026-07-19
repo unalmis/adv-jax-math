@@ -93,6 +93,79 @@ def _scaled_ones(scale, leaf):
     return scale * jnp.ones_like(leaf)
 
 
+_SPARSE_PULLBACK_CASES = (
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {},
+        jnp.linspace(0.5, 1.5, 10),
+        id="unbatched",
+    ),
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {"batch_size": 4},
+        jnp.linspace(0.5, 1.5, 10),
+        id="chunked",
+    ),
+    pytest.param(
+        partial(_sum_output, _nested_batched_fun),
+        _nested_batched_fun,
+        {
+            "batch_size": 4,
+            "reduction": jnp.add,
+            "chunk_reduction": jnp.sum,
+        },
+        jnp.array(1.7),
+        id="reduced",
+    ),
+    pytest.param(
+        partial(_vmap_call, _nested_single_fun),
+        _nested_single_fun,
+        {"batch_size": 1, "strip_dim0": True},
+        jnp.linspace(0.5, 1.5, 10),
+        id="stripped",
+    ),
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {"shard_input_data": True},
+        jnp.linspace(0.5, 1.5, 10),
+        id="sharded",
+    ),
+    pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {"batch_size": 4, "shard_input_data": True},
+        jnp.linspace(0.5, 1.5, 10),
+        id="sharded-chunked",
+    ),
+    pytest.param(
+        partial(_sum_output, _nested_batched_fun),
+        _nested_batched_fun,
+        {
+            "batch_size": 4,
+            "reduction": jnp.add,
+            "chunk_reduction": jnp.sum,
+            "shard_input_data": True,
+        },
+        jnp.array(1.7),
+        id="sharded-reduced",
+    ),
+    pytest.param(
+        partial(_vmap_call, _nested_single_fun),
+        _nested_single_fun,
+        {
+            "batch_size": 1,
+            "strip_dim0": True,
+            "shard_input_data": True,
+        },
+        jnp.linspace(0.5, 1.5, 10),
+        id="sharded-stripped",
+    ),
+)
+
+
 def _assert_tree_allclose(got, expected):
     assert eqx.tree_equal(got, expected, rtol=1e-6, atol=1e-7)
 
@@ -336,6 +409,14 @@ def test_sparse_pullback_map():
 
 
 @pytest.mark.unit
+def test_sparse_pullback_preserves_none_cotangent_leaves():
+    """Nondifferentiable leaves should remain absent from sparse cotangents."""
+    from adv_jax_math._sparse import _mul_cotangent
+
+    assert _mul_cotangent(None, g=jnp.array(1.0)) is None
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
 def test_sparse_pullback_hijax_jvp_and_linearize():
     """The HiJAX backend should contract and reuse pytree linearizations."""
@@ -567,7 +648,7 @@ def test_sparse_pullback_hijax_jit_with_dynamic_closure():
 
 @pytest.mark.unit
 def test_sparse_pullback_legacy_backend():
-    """JAX versions predating HiJAX should retain the custom-VJP backend."""
+    """The custom-VJP backend should retain higher-order differentiation."""
     _run_forced_cpu_devices(
         """
         import numpy as np
@@ -582,7 +663,7 @@ def test_sparse_pullback_legacy_backend():
 
         assert not _USE_HIJAX
         x = jnp.arange(1.0, 5.0)
-        wrapped = sparse_pullback_map(lambda y: y**3, x)
+        wrapped = sparse_pullback_map(lambda y: y**3, x, higher_order=True)
         out, pullback = jax.vjp(wrapped, x)
         np.testing.assert_allclose(out, x**3)
         np.testing.assert_allclose(
@@ -597,72 +678,68 @@ def test_sparse_pullback_legacy_backend():
         else:
             raise AssertionError("legacy custom VJP unexpectedly supported JVP")
 
-        for fun in (
-            lambda: sparse_pullback_map(lambda y: y**3, x, higher_order=True),
-            lambda: sparse_pullback(lambda y: y**3, x, higher_order=True),
+        for transformed in (
+            wrapped,
+            lambda y: sparse_pullback(
+                lambda z: z**3,
+                y,
+                batch_size=2,
+                higher_order=True,
+            ),
         ):
-            try:
-                fun()
-            except NotImplementedError:
-                pass
-            else:
-                raise AssertionError("legacy backend accepted higher_order=True")
+            scalar = lambda y: jnp.sum(transformed(y))
+            gradient = jax.grad(scalar)
+            np.testing.assert_allclose(gradient(x), 3 * x**2)
+            np.testing.assert_allclose(
+                jax.grad(lambda y: jnp.sum(gradient(y)))(x),
+                6 * x,
+            )
+            np.testing.assert_allclose(jax.hessian(scalar)(x), jnp.diag(6 * x))
         """,
         num_devices=1,
     )
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("case", ["unbatched", "chunked", "reduced", "strip_dim0"])
-def test_sparse_pullback(case):
-    """Test sparse pullback."""
+@pytest.mark.parametrize(
+    ("dense", "sparse_fun", "sparse_kwargs", "cotangent"),
+    _SPARSE_PULLBACK_CASES,
+)
+def test_sparse_pullback_vjp(dense, sparse_fun, sparse_kwargs, cotangent):
+    """Sparse pullbacks should match dense pullbacks across batching modes."""
     x = {
         "a": jnp.linspace(-1, 1, 10 * 7).reshape(10, 7),
         "b": {"c": jnp.linspace(0.1, 0.9, 10 * 5).reshape(10, 5)},
     }
-    ct = jnp.linspace(0.5, 1.5, 10)
-
-    if case == "unbatched":
-        dense = _nested_batched_fun
-        sparse = partial(sparse_pullback, _nested_batched_fun)
-        cotangent = ct
-    elif case == "chunked":
-        dense = _nested_batched_fun
-        sparse = partial(sparse_pullback, _nested_batched_fun, batch_size=4)
-        cotangent = ct
-    elif case == "reduced":
-        dense = partial(_sum_output, _nested_batched_fun)
-        sparse = partial(
-            sparse_pullback,
-            _nested_batched_fun,
-            batch_size=4,
-            reduction=jnp.add,
-            chunk_reduction=jnp.sum,
-        )
-        cotangent = jnp.array(1.7)
-    else:
-        dense = partial(_vmap_call, _nested_single_fun)
-        sparse = partial(
-            sparse_pullback,
-            _nested_single_fun,
-            batch_size=1,
-            strip_dim0=True,
-        )
-        cotangent = ct
+    sparse = partial(sparse_pullback, sparse_fun, **sparse_kwargs)
 
     out, pullback = jax.vjp(dense, x)
     got_out, got_pullback = jax.vjp(sparse, x)
     np.testing.assert_allclose(got_out, out)
     _assert_tree_allclose(got_pullback(cotangent)[0], pullback(cotangent)[0])
 
-    if _HAS_HIJAX:
-        tangent = jax.tree.map(partial(_scaled_ones, 0.37), x)
-        expected_out, expected_tangent = jax.jvp(dense, (x,), (tangent,))
-        got_out, got_tangent = jax.jvp(sparse, (x,), (tangent,))
-        np.testing.assert_allclose(got_out, expected_out)
-        np.testing.assert_allclose(
-            got_tangent,
-            expected_tangent,
-            rtol=1e-6,
-            atol=1e-7,
-        )
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+@pytest.mark.parametrize(
+    ("dense", "sparse_fun", "sparse_kwargs", "_cotangent"),
+    _SPARSE_PULLBACK_CASES,
+)
+def test_sparse_pullback_jvp(dense, sparse_fun, sparse_kwargs, _cotangent):
+    """Sparse pushforwards should match dense pushforwards across batching modes."""
+    x = {
+        "a": jnp.linspace(-1, 1, 10 * 7).reshape(10, 7),
+        "b": {"c": jnp.linspace(0.1, 0.9, 10 * 5).reshape(10, 5)},
+    }
+    tangent = jax.tree.map(partial(_scaled_ones, 0.37), x)
+    sparse = partial(sparse_pullback, sparse_fun, **sparse_kwargs)
+
+    expected_out, expected_tangent = jax.jvp(dense, (x,), (tangent,))
+    got_out, got_tangent = jax.jvp(sparse, (x,), (tangent,))
+    np.testing.assert_allclose(got_out, expected_out)
+    np.testing.assert_allclose(
+        got_tangent,
+        expected_tangent,
+        rtol=1e-6,
+        atol=1e-7,
+    )

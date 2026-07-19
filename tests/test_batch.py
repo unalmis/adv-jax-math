@@ -19,6 +19,8 @@ from adv_jax_math._batch import (
     batched_vectorize,
     jacfwd_chunked,
     jacrev_chunked,
+    make_shardable,
+    vmap_chunked,
 )
 
 
@@ -39,10 +41,158 @@ def _assert_tree_allclose(actual, expected):
 
 
 @pytest.mark.unit
-def test_batch_map_with_chunk_size():
-    """Test batch_map with a chunk size."""
+@pytest.mark.parametrize(
+    ("kwargs", "reduce_output"),
+    (
+        pytest.param({}, False, id="unbatched"),
+        pytest.param({"batch_size": 2}, False, id="chunked-remainder"),
+        pytest.param({"batch_size": 5}, False, id="full-batch"),
+        pytest.param(
+            {"batch_size": 1, "strip_dim0": True},
+            False,
+            id="stripped",
+        ),
+        pytest.param(
+            {
+                "batch_size": 2,
+                "reduction": jnp.add,
+                "chunk_reduction": jnp.sum,
+            },
+            True,
+            id="reduced",
+        ),
+        pytest.param(
+            {"shard_input_data": True},
+            False,
+            id="sharded",
+        ),
+        pytest.param(
+            {"batch_size": 2, "shard_input_data": True},
+            False,
+            id="sharded-chunked",
+        ),
+        pytest.param(
+            {"batch_size": 8, "shard_input_data": True},
+            False,
+            id="sharded-full-batch",
+        ),
+        pytest.param(
+            {
+                "batch_size": 1,
+                "strip_dim0": True,
+                "shard_input_data": True,
+            },
+            False,
+            id="sharded-stripped",
+        ),
+        pytest.param(
+            {
+                "batch_size": 2,
+                "reduction": jnp.add,
+                "chunk_reduction": jnp.sum,
+                "shard_input_data": True,
+            },
+            True,
+            id="sharded-reduced",
+        ),
+    ),
+)
+def test_batch_map_modes(kwargs, reduce_output):
+    """Batching modes should preserve values and requested reductions."""
     x = jnp.arange(5.0)
-    np.testing.assert_allclose(batch_map(lambda y: y + 1, x, batch_size=2), x + 1)
+    expected = jnp.sum(x + 1) if reduce_output else x + 1
+    np.testing.assert_allclose(batch_map(lambda y: y + 1, x, **kwargs), expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("chunk_size", (None, 1, 2, 8))
+def test_vmap_chunked_matches_vmap(chunk_size):
+    """Chunk sizes should not change mapped results with static arguments."""
+    x = jnp.arange(5.0)
+    actual = vmap_chunked(
+        lambda value, scale: value * scale,
+        in_axes=(0, None),
+        chunk_size=chunk_size,
+    )(x, 3.0)
+    np.testing.assert_allclose(actual, x * 3)
+
+
+@pytest.mark.unit
+def test_vmap_chunked_reduction():
+    """Chunk and cross-chunk reductions should compose."""
+    x = jnp.arange(5.0)
+    actual = vmap_chunked(
+        lambda value: value**2,
+        chunk_size=2,
+        reduction=jnp.add,
+        chunk_reduction=jnp.sum,
+    )(x)
+    np.testing.assert_allclose(actual, jnp.sum(x**2))
+
+
+@pytest.mark.unit
+def test_vmap_chunked_rejects_unsupported_axes():
+    """Only mapped axis zero and unmapped inputs are supported."""
+    with pytest.raises(NotImplementedError, match="Only in_axes 0/None"):
+        vmap_chunked(lambda value: value, in_axes=1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("chunk_size", (None, 2))
+def test_sharded_batching_falls_back_when_unsupported(monkeypatch, chunk_size):
+    """Older JAX installations should transparently use ordinary chunking."""
+    import adv_jax_math._batch as batch_module
+
+    monkeypatch.setattr(batch_module, "_SUPPORTS_SHARDED_BATCHING", False)
+    x = jnp.arange(5.0)
+    actual = vmap_chunked(
+        lambda value: value + 1,
+        chunk_size=chunk_size,
+        shard_input_data=True,
+    )(x)
+    np.testing.assert_allclose(actual, x + 1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("split_at", "reduction", "chunk_reduction"),
+    (
+        pytest.param(0, None, lambda value: value, id="remainder-only"),
+        pytest.param(4, None, lambda value: value, id="concatenated-remainder"),
+        pytest.param(4, jnp.add, jnp.sum, id="reduced-remainder"),
+    ),
+)
+def test_sharded_evaluation_combines_remainders(
+    monkeypatch,
+    split_at,
+    reduction,
+    chunk_reduction,
+):
+    """Sharded prefixes and globally evaluated remainders should recombine."""
+    import adv_jax_math._batch as batch_module
+
+    if not batch_module._SUPPORTS_SHARDED_BATCHING:
+        pytest.skip("Sharded batching requires JAX 0.10.2 or newer")
+
+    def split(value, _axis, _num_devices, _mesh, *, normalize_explicit=False):
+        del normalize_explicit
+        return value[:split_at], value[split_at:]
+
+    monkeypatch.setattr(batch_module, "_make_shardable", split)
+    mesh = batch_module._make_automatic_mesh(1)
+    x = jnp.arange(5.0)
+    actual = batch_module._evaluate_sharded_on_mesh(
+        lambda value: value + 1,
+        2,
+        (0,),
+        reduction,
+        chunk_reduction,
+        1,
+        mesh,
+        x,
+    )
+    expected = x + 1 if reduction is None else jnp.sum(x + 1)
+    np.testing.assert_allclose(actual, expected)
 
 
 @pytest.mark.unit
@@ -187,6 +337,44 @@ def test_batched_vectorize_matches_jax_special_arguments_and_outputs():
     signature = "(n)->(),()"
     expected = jnp.vectorize(statistics, signature=signature)(values)
     actual = batched_vectorize(statistics, signature=signature, chunk_size=2)(values)
+    _assert_tree_allclose(actual, expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "excluded",
+    (
+        pytest.param(frozenset({1.5}), id="non-string-or-integer"),
+        pytest.param(frozenset({-1}), id="negative-integer"),
+    ),
+)
+def test_batched_vectorize_rejects_invalid_exclusions(excluded):
+    """Excluded arguments should follow the jax.numpy.vectorize contract."""
+    with pytest.raises((TypeError, ValueError)):
+        batched_vectorize(jnp.add, excluded=excluded)
+
+
+@pytest.mark.unit
+def test_batched_vectorize_rejects_none_core_argument():
+    """None is only valid for arguments without core dimensions."""
+    vectorized = batched_vectorize(lambda value: value, signature="(n)->()")
+    with pytest.raises(ValueError, match="Cannot pass None"):
+        vectorized(None)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "fun",
+    (
+        pytest.param(lambda value: value + 1, id="array-output"),
+        pytest.param(lambda value: (value + 1, value - 1), id="tuple-output"),
+    ),
+)
+def test_batched_vectorize_preserves_singleton_dimensions(fun):
+    """Singleton mapped dimensions should be restored after evaluation."""
+    x = jnp.ones((1,))
+    expected = jnp.vectorize(fun)(x)
+    actual = batched_vectorize(fun, chunk_size=1)(x)
     _assert_tree_allclose(actual, expected)
 
 
@@ -360,3 +548,17 @@ def test_make_shardable():
             jnp.sin(f),
         )
         """)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("axis", (0, -1))
+def test_make_shardable_defaults_to_available_devices(axis):
+    """The default device count should shard pytrees along normalized axes."""
+    x = {"value": jnp.arange(12.0).reshape(3, 4)}
+    sharded, remainder = make_shardable(x, axis=axis)
+    normalized_axis = axis % x["value"].ndim
+    combined = jnp.concatenate(
+        (sharded["value"], remainder["value"]),
+        axis=normalized_axis,
+    )
+    np.testing.assert_allclose(combined, x["value"])

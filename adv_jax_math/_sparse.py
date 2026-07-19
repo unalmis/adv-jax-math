@@ -19,7 +19,7 @@ from ._batch import (
     _scanmap,
     _unchunk,
 )
-from ._utils import errorif, identity
+from ._utils import identity
 
 
 def _is_none(x):
@@ -70,9 +70,11 @@ if _USE_HIJAX:  # noqa: C901
             return self._fn(fn_dynamic)(y)
 
         def batch_dim_rule(self, _axis_data, in_dims):
-            if tree_leaves(in_dims):
-                return jax.tree.broadcast(0, self.out_aval)
-            return eqx.filter(self.out_aval, False)
+            return (
+                jax.tree.broadcast(0, self.out_aval)
+                if tree_leaves(in_dims)
+                else eqx.filter(self.out_aval, False)
+            )
 
         def lin(self, nzs_in, y, fn_dynamic):
             out, p = self.vjp_fwd(nzs_in, y, fn_dynamic)
@@ -98,11 +100,13 @@ if _USE_HIJAX:  # noqa: C901
             return self(y, fn_dynamic) if self.higher_order else out, p
 
         def vjp_bwd_retval(self, p, g):
-            if isinstance(g, Zero):
-                return eqx.filter(self.in_avals, False)
             return (
-                tree_map(partial(_mul_cotangent, g=g), p),
-                eqx.filter(self.in_avals[1], False),
+                eqx.filter(self.in_avals, False)
+                if isinstance(g, Zero)
+                else (
+                    tree_map(partial(_mul_cotangent, g=g), p),
+                    eqx.filter(self.in_avals[1], False),
+                )
             )
 
     def _sparse_pullback(y, *, fn, higher_order):
@@ -151,8 +155,9 @@ def sparse_pullback_map(fn, y, *, higher_order=False):
     y : pytree
         Example input used to closure-convert ``fn``.
     higher_order : bool
-        Whether to support higher order differentiation (on JAX versions
-        0.11+) at the expense of evaluating the primal ``fn`` twice.
+        Whether to support higher-order differentiation with the HiJAX backend
+        at the expense of evaluating the primal ``fn`` twice. The custom-VJP
+        backend supports higher-order differentiation regardless of this flag.
         Default is ``False``.
 
     Returns
@@ -166,11 +171,6 @@ def sparse_pullback_map(fn, y, *, higher_order=False):
     >>> out = fn(y)
 
     """
-    errorif(
-        higher_order and not _USE_HIJAX,
-        NotImplementedError,
-        "higher_order=True requires JAX 0.11 or newer.",
-    )
     fn = eqx.filter_closure_convert(fn, y)
     return wraps(fn)(partial(_sparse_pullback, fn=fn, higher_order=higher_order))
 
@@ -253,8 +253,9 @@ def sparse_pullback(
         evaluated once overall. The input length need not be divisible by either
         the device count or ``batch_size``. Default is ``False``.
     higher_order : bool
-        Whether to support higher order differentiation (on JAX versions
-        0.11+) at the expense of evaluating the primal ``fn`` twice.
+        Whether to support higher-order differentiation with the HiJAX backend
+        at the expense of evaluating the primal ``fn`` twice. The custom-VJP
+        backend supports higher-order differentiation regardless of this flag.
         Default is ``False``.
 
     Returns
@@ -267,12 +268,6 @@ def sparse_pullback(
     >>> out = sparse_pullback(fn, y)
 
     """
-    errorif(
-        higher_order and not _USE_HIJAX,
-        NotImplementedError,
-        "higher_order=True requires JAX 0.11 or newer.",
-    )
-
     if shard_input_data:
         sparse_fun = partial(
             (
