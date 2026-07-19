@@ -37,7 +37,7 @@ from jax.tree_util import (
     tree_structure,
     tree_transpose,
 )
-from packaging.version import Version
+from packaging import version
 
 from ._utils import Index, errorif, identity, warnif
 
@@ -73,11 +73,18 @@ except ImportError:
     AxisType = None
     reshard = None
 
+_JAX_VERSION = version.parse(jax.__version__)
+_MAKE_MESH_KWARGS = (
+    {"axis_types": (jax.sharding.AxisType.Auto,)}
+    if version.parse("0.8.1") <= _JAX_VERSION < version.parse("0.9.0")
+    else {}
+)
+
 # Sharded batching uses automatic mesh axes so that device placement does not
 # leak an explicit mesh into pullback cotangent types. Older JAX versions fall
 # back to ordinary chunking.
 _SUPPORTS_SHARDED_BATCHING = (
-    Version(jax.__version__) >= Version("0.10.2")
+    _JAX_VERSION >= version.parse("0.10.2")
     and AxisType is not None
     and reshard is not None
 )
@@ -199,12 +206,7 @@ def make_shardable(f, axis=0, num_devices=None):
 
     """
     num_devices = jax.device_count() if num_devices is None else num_devices
-    mesh_kwargs = (
-        {"axis_types": (jax.sharding.AxisType.Auto,)}
-        if Version("0.8.1") <= Version(jax.__version__) < Version("0.9.0")
-        else {}
-    )
-    mesh = jax.make_mesh((num_devices,), ("x",), **mesh_kwargs)
+    mesh = jax.make_mesh((num_devices,), ("x",), **_MAKE_MESH_KWARGS)
     return _make_shardable(f, axis, num_devices, mesh)
 
 

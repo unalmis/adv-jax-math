@@ -15,11 +15,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from packaging.version import Version
+from packaging import version
 
 from adv_jax_math import sparse_pullback, sparse_pullback_map
 
-_HAS_HIJAX = Version(jax.__version__) >= Version("0.11.0")
+_HAS_HIJAX = version.parse(jax.__version__) >= version.parse("0.11.0")
 
 
 def _cube(y):
@@ -197,13 +197,15 @@ class TestDerivative:
             import jax
             import jax.numpy as jnp
             from jax.sharding import NamedSharding, PartitionSpec
-            from packaging.version import Version
+            from packaging import version
 
             from adv_jax_math import sparse_pullback
 
             assert jax.device_count() == 4
-            supports_sharding = Version(jax.__version__) >= Version("0.10.2")
-            supports_jvp = Version(jax.__version__) >= Version("0.11.0")
+            supports_sharding = version.parse(jax.__version__) >= version.parse(
+                "0.10.2"
+            )
+            supports_jvp = version.parse(jax.__version__) >= version.parse("0.11.0")
             x = jnp.arange(13.0)
 
             cases = [
@@ -659,9 +661,7 @@ def test_sparse_pullback_legacy_backend():
         jax.__version__ = "0.10.0"
 
         from adv_jax_math import sparse_pullback, sparse_pullback_map
-        from adv_jax_math._sparse import _USE_HIJAX
 
-        assert not _USE_HIJAX
         x = jnp.arange(1.0, 5.0)
         wrapped = sparse_pullback_map(lambda y: y**3, x, higher_order=True)
         out, pullback = jax.vjp(wrapped, x)

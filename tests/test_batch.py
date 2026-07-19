@@ -408,7 +408,7 @@ def test_sharded_chunked_batching():
 
         import jax
         import jax.numpy as jnp
-        from packaging.version import Version
+        from packaging import version
 
         from adv_jax_math._batch import batch_map, vmap_chunked
 
@@ -481,7 +481,7 @@ def test_sharded_chunked_batching():
         np.testing.assert_allclose(two_inputs(x, x[::-1]), x - x[::-1])
         np.testing.assert_allclose(jax.jit(two_inputs)(x, x[::-1]), x - x[::-1])
 
-        if Version(jax.__version__) >= Version("0.10.2"):
+        if version.parse(jax.__version__) >= version.parse("0.10.2"):
             calls = []
 
             def record(local, *, global_shape):

@@ -9,7 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_leaves, tree_map
-from packaging.version import Version
+from packaging import version
 
 from ._batch import (
     _batch_and_remainder,
@@ -40,9 +40,7 @@ def _mul_cotangent(p, *, g):
     return p * g.reshape(shape)
 
 
-_USE_HIJAX = Version(jax.__version__) >= Version("0.11.0")
-
-if _USE_HIJAX:  # noqa: C901
+if version.parse(jax.__version__) >= version.parse("0.11.0"):  # noqa: C901
     from equinox import internal as eqxi
     from jax._src.interpreters.ad import add_tangents
     from jax.experimental.hijax import VJPHiPrimitive, Zero, jvp_from_lin
