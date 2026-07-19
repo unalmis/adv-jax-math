@@ -1,0 +1,22 @@
+# Please see the documentation for all configuration options:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/" # Location of package manifests
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "increase-if-necessary"
+    exclude-paths:
+      - "devtools/**"
+  - package-ecosystem: "pip"
+    directory: "/devtools" # Location of development requirements
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "increase-if-necessary"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      # Check for updates to GitHub Actions every week
+      interval: "weekly"

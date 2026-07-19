@@ -1,0 +1,23 @@
+# standard install requirements
+-r ../requirements.txt
+
+# building the docs
+sphinx >= 8.1.3, <= 9.1.0
+sphinx_copybutton <= 0.5.2
+sphinx-rtd-theme >= 3.1.0, < 3.1.1
+
+# linting
+black
+flake8 >= 5.0.0, <= 7.3.0
+flake8-docstrings >= 1.7.0
+flake8-eradicate >= 1.0.0, <= 1.5.0
+flake8-isort >= 5.0.0, <= 7.0.0
+pre-commit <= 4.6.0
+
+# testing and benchmarking
+pytest >= 5.0.0, <= 9.1.1
+pytest-benchmark <= 5.2.3
+pytest-cov >= 2.6.0, <= 7.1.0
+
+# building
+build
