@@ -20,6 +20,18 @@ Installation
 
 For full details, see the `API documentation <https://unalmis.github.io/adv-jax-math/>`__.
 
+Licensing
+=========
+
+Copyright (C) 2024 Kaya Unalmis.
+
+``adv-jax-math`` is licensed under the `GNU Lesser General Public License,
+version 3`_. Portions adapted from JAX retain their original attribution
+notices in the source.
+
+.. _GNU Lesser General Public License, version 3:
+   https://github.com/unalmis/adv-jax-math/blob/main/LICENSE
+
 
 .. |License| image:: https://img.shields.io/github/license/unalmis/adv-jax-math?color=blue&logo=open-source-initiative&logoColor=white
     :target: https://github.com/unalmis/adv-jax-math/blob/main/LICENSE

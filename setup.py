@@ -1,3 +1,6 @@
+# Copyright (C) 2024 Kaya Unalmis
+# SPDX-License-Identifier: LGPL-3.0
+
 """Setup/build/install script for adv-jax-math."""
 
 import os
@@ -24,7 +27,7 @@ setup(
     url="https://github.com/unalmis/adv-jax-math",
     author="Kaya Unalmis",
     author_email="kunalmis@stanford.edu",
-    license="MIT",
+    license="LGPL-3.0",
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",

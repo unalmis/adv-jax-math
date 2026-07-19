@@ -1,3 +1,6 @@
+# Copyright (C) 2024 Kaya Unalmis
+# SPDX-License-Identifier: LGPL-3.0
+
 """Tests for batching functions."""
 
 import os

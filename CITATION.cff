@@ -17,4 +17,4 @@ identifiers:
 repository-code: 'https://github.com/unalmis/adv-jax-math'
 url: 'https://unalmis.github.io/adv-jax-math/'
 repository-artifact: 'https://pypi.org/project/adv-jax-math/'
-license: MIT
+license: LGPL-3.0

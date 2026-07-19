@@ -1,3 +1,6 @@
+# Copyright (C) 2024 Kaya Unalmis
+# SPDX-License-Identifier: LGPL-3.0
+
 """Advanced automatic-differentiation and batching utilities for JAX."""
 
 from . import _version

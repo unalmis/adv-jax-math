@@ -1,3 +1,6 @@
+# Copyright (C) 2024 Kaya Unalmis
+# SPDX-License-Identifier: LGPL-3.0
+
 """Sparsity-aware JAX derivative utilities."""
 
 from functools import partial, wraps
@@ -136,11 +139,6 @@ def sparse_pullback_map(fn, y, *, higher_order=False):
     of its pullback. The derivatives will be exact for maps whose Jacobians are
     block diagonal.
 
-    References
-    ----------
-    Kaya Unalmis.
-    https://github.com/jax-ml/jax/issues/36862.
-
     See Also
     --------
     sparse_pullback
@@ -225,11 +223,6 @@ def sparse_pullback(
     --------
     sparse_pullback_map
         Functional version.
-
-    References
-    ----------
-    Kaya Unalmis.
-    https://github.com/jax-ml/jax/issues/36862.
 
     Parameters
     ----------
