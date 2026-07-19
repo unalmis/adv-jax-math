@@ -34,6 +34,7 @@ from jax.tree_util import (
     tree_structure,
     tree_transpose,
 )
+from packaging.version import Version
 
 from ._utils import Index, errorif, identity, warnif
 
@@ -64,13 +65,19 @@ except ImportError:
 _HAS_LAX_RESHAPE_OUT_SHARDING = "out_sharding" in signature(jax.lax.reshape).parameters
 
 try:
-    from jax.sharding import reshard
+    from jax.sharding import AxisType, reshard
 except ImportError:
+    AxisType = None
     reshard = None
 
-# Sharded batching is intentionally outside this package's current scope. Keep
-# accepting the compatibility argument, but use the ordinary chunked path.
-_SUPPORTS_SHARDED_BATCHING = False
+# Sharded batching uses automatic mesh axes so that device placement does not
+# leak an explicit mesh into pullback cotangent types. Older JAX versions fall
+# back to ordinary chunking.
+_SUPPORTS_SHARDED_BATCHING = (
+    Version(jax.__version__) >= Version("0.10.2")
+    and AxisType is not None
+    and reshard is not None
+)
 
 _concat = partial(tree_map, lambda y1, y2: jnp.concatenate((y1, y2)))
 _get_first_chunk = partial(tree_map, lambda x: x[0])
@@ -81,12 +88,20 @@ def _reshape_with_sharding(x, shape, spec, mesh=None):
     if mesh is None and isinstance(sharding, NamedSharding):
         mesh = sharding.mesh
     if mesh is not None:
-        return jax.lax.reshape(
-            x,
-            shape,
-            out_sharding=NamedSharding(mesh, spec),
-        )
+        out_sharding = NamedSharding(mesh, spec)
+        if AxisType is not None and AxisType.Auto in mesh.axis_types:
+            return jax.lax.with_sharding_constraint(x.reshape(shape), out_sharding)
+        if _HAS_LAX_RESHAPE_OUT_SHARDING:
+            return jax.lax.reshape(x, shape, out_sharding=out_sharding)
     return x.reshape(shape)
+
+
+def _make_automatic_mesh(num_devices):
+    return jax.make_mesh(
+        (num_devices,),
+        ("x",),
+        axis_types=(AxisType.Auto,),
+    )
 
 
 def _reshard_leaf_to_replicated(x, mesh):
@@ -124,15 +139,21 @@ def _scan_reduce(
     f,
     x,
     reduction=None,
-    carry_init_fun=partial(tree_map, lambda x: jnp.zeros_like(x)),
+    carry_init_fun=None,
 ):
     """Evaluate f element-wise in x while reducing the results."""
 
     def body(carry, x):
         return reduction(carry, f(x)), None
 
-    carry_init = carry_init_fun(jax.eval_shape(f, _get_first_chunk(x)))
-    result, _ = scan(body, carry_init, x)
+    first = _get_first_chunk(x)
+    if carry_init_fun is not None:
+        carry_init = carry_init_fun(jax.eval_shape(f, first))
+        scan_x = x
+    else:
+        carry_init = f(first)
+        scan_x = tree_map(lambda leaf: leaf[1:], x)
+    result, _ = scan(body, carry_init, scan_x)
     return result
 
 
@@ -175,7 +196,13 @@ def make_shardable(f, axis=0, num_devices=None):
         num_devices = jax.device_count()
 
     mesh = jax.make_mesh((num_devices,), ("x",))
+    return _make_shardable(f, axis, num_devices, mesh)
+
+
+def _make_shardable(f, axis, num_devices, mesh, *, replicate_input=False):
     leaves, treedef = tree_flatten(f)
+    if replicate_input:
+        leaves = [_reshard_leaf_to_replicated(leaf, mesh) for leaf in leaves]
     out = [_shard(leaf, axis, num_devices, mesh) for leaf in leaves]
     sf = treedef.unflatten(f[0] for f in out)
     rf = treedef.unflatten(f[1] for f in out)
@@ -365,8 +392,47 @@ def _evaluate_sharded(
     *args,
     **kwargs,
 ):
+    num_devices = jax.device_count()
+    mesh = _make_automatic_mesh(num_devices)
+    return _evaluate_sharded_on_mesh(
+        fun,
+        chunk_size,
+        argnums,
+        reduction,
+        chunk_reduction,
+        num_devices,
+        mesh,
+        *args,
+        **kwargs,
+    )
+
+
+def _evaluate_sharded_on_mesh(
+    fun,
+    chunk_size,
+    argnums,
+    reduction,
+    chunk_reduction,
+    num_devices,
+    mesh,
+    *args,
+    **kwargs,
+):
     args_shardable, args_remainder = zip(
-        *[make_shardable(a) if i in argnums else (a, a) for i, a in enumerate(args)]
+        *[
+            (
+                _make_shardable(
+                    a,
+                    0,
+                    num_devices,
+                    mesh,
+                    replicate_input=True,
+                )
+                if i in argnums
+                else (a, a)
+            )
+            for i, a in enumerate(args)
+        ]
     )
     n_shardable = tree_leaves(args_shardable[argnums[0]])[0].shape[0]
     n_remainder = tree_leaves(args_remainder[argnums[0]])[0].shape[0]
@@ -382,9 +448,6 @@ def _evaluate_sharded(
             *args_remainder,
             **kwargs,
         )
-
-    num_devices = jax.device_count()
-    mesh = jax.make_mesh((num_devices,), ("x",))
 
     # Global sharded layout: the divisible prefix is partitioned over axis 0.
     if chunk_size is None:

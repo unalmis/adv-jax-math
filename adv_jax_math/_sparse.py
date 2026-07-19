@@ -276,11 +276,6 @@ def sparse_pullback(
         "higher_order=True requires JAX 0.11 or newer.",
     )
 
-    if _USE_HIJAX:
-        # HiJAX sharding/batching rules are outside the current implementation.
-        # Preserve the option for API compatibility but use the ordinary path.
-        shard_input_data = False
-
     if shard_input_data:
         sparse_fun = partial(
             (

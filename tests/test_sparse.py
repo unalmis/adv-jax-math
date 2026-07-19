@@ -117,10 +117,13 @@ class TestDerivative:
 
             import jax
             import jax.numpy as jnp
+            from packaging.version import Version
 
             from adv_jax_math import sparse_pullback
 
             assert jax.device_count() == 4
+            supports_sharding = Version(jax.__version__) >= Version("0.10.2")
+            supports_jvp = Version(jax.__version__) >= Version("0.11.0")
             x = jnp.arange(13.0)
 
             cases = [
@@ -164,8 +167,65 @@ class TestDerivative:
                 ),
             ]
             for fun, expected in cases:
-                np.testing.assert_allclose(fun(x), expected)
-                np.testing.assert_allclose(jax.jit(fun)(x), expected)
+                actual = fun(x)
+                np.testing.assert_allclose(actual, expected)
+                if supports_sharding:
+                    assert len(actual.sharding.device_set) == 4
+
+                actual = jax.jit(fun)(x)
+                np.testing.assert_allclose(actual, expected)
+                if supports_sharding:
+                    assert len(actual.sharding.device_set) == 4
+
+                if supports_sharding:
+                    out, pullback = jax.vjp(fun, x)
+                    cotangent = jax.device_put(jnp.ones_like(out), out.sharding)
+                    np.testing.assert_allclose(pullback(cotangent)[0], 2 * x)
+                    np.testing.assert_allclose(
+                        jax.grad(lambda y: jnp.sum(fun(y)))(x),
+                        2 * x,
+                    )
+                    np.testing.assert_allclose(
+                        jax.jit(jax.grad(lambda y: jnp.sum(fun(y))))(x),
+                        2 * x,
+                    )
+
+                if supports_jvp:
+                    tangent = jax.jvp(fun, (x,), (jnp.ones_like(x),))[1]
+                    expected_tangent = 2 * x
+                    if expected.ndim == 0:
+                        expected_tangent = jnp.sum(expected_tangent)
+                    np.testing.assert_allclose(tangent, expected_tangent)
+
+            if supports_sharding:
+                even_x = x[:-1]
+                sharded_fun = lambda y: sparse_pullback(
+                    lambda z: z**2,
+                    y,
+                    batch_size=2,
+                    shard_input_data=True,
+                )
+                for run in (sharded_fun, jax.jit(sharded_fun)):
+                    actual = run(even_x)
+                    np.testing.assert_allclose(actual, even_x**2)
+                    assert not actual.sharding.is_fully_replicated
+
+            if supports_jvp:
+                scalar_higher_order = lambda y: jnp.sum(
+                    sparse_pullback(
+                        lambda z: z**3,
+                        y,
+                        batch_size=2,
+                        shard_input_data=True,
+                        higher_order=True,
+                    )
+                )
+                grad = jax.grad(scalar_higher_order)
+                np.testing.assert_allclose(grad(x), 3 * x**2)
+                np.testing.assert_allclose(
+                    jax.grad(lambda y: jnp.sum(grad(y)))(x),
+                    6 * x,
+                )
             """)
 
 
@@ -424,7 +484,7 @@ def test_sparse_pullback_legacy_backend():
         jax.__version__ = "0.10.0"
 
         from adv_jax_math import sparse_pullback, sparse_pullback_map
-        from adv_jax_math._derivatives import _USE_HIJAX
+        from adv_jax_math._sparse import _USE_HIJAX
 
         assert not _USE_HIJAX
         x = jnp.arange(1.0, 5.0)
