@@ -18,6 +18,10 @@ concurrency:
 jobs:
   unit_tests:
 
+    permissions:
+      contents: read
+      id-token: write
+
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -51,7 +55,7 @@ jobs:
         if: github.actor != 'dependabot[bot]'
         uses: codecov/codecov-action@v7
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
           name: codecov-umbrella
           files: ./cov.xml
           fail_ci_if_error: true
