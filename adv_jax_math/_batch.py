@@ -140,19 +140,15 @@ def _scan_append(f, x, reduction=None, carry_init_fun=None):
     return result
 
 
-def _scan_reduce(
-    f,
-    x,
-    reduction=None,
-    carry_init_fun=partial(tree_map, lambda x: jnp.zeros_like(x)),
-):
+def _scan_reduce(f, x, reduction=None):
     """Evaluate f element-wise in x while reducing the results."""
 
     def body(carry, x):
         return reduction(carry, f(x)), None
 
-    carry_init = carry_init_fun(jax.eval_shape(f, _get_first_chunk(x)))
-    result, _ = scan(body, carry_init, x)
+    carry_init = f(_get_first_chunk(x))
+    remaining_x = tree_map(lambda leaf: leaf[1:], x)
+    result, _ = scan(body, carry_init, remaining_x)
     return result
 
 

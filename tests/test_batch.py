@@ -132,6 +132,51 @@ def test_batch_vmap_reduction():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reduction", "chunk_reduction", "values", "expected"),
+    (
+        pytest.param(
+            jnp.multiply,
+            jnp.prod,
+            jnp.arange(1.0, 6.0),
+            120.0,
+            id="product",
+        ),
+        pytest.param(
+            jnp.maximum,
+            jnp.max,
+            -jnp.arange(1.0, 6.0),
+            -1.0,
+            id="negative-maximum",
+        ),
+    ),
+)
+def test_chunk_reduction_does_not_assume_zero_identity(
+    reduction,
+    chunk_reduction,
+    values,
+    expected,
+):
+    """Cross-chunk reductions should seed from the first computed chunk."""
+    vmapped = batch_vmap(
+        lambda value: value,
+        batch_size=2,
+        reduction=reduction,
+        chunk_reduction=chunk_reduction,
+    )(values)
+    mapped = batch_map(
+        lambda value: value,
+        values,
+        batch_size=2,
+        reduction=reduction,
+        chunk_reduction=chunk_reduction,
+    )
+
+    np.testing.assert_allclose(vmapped, expected)
+    np.testing.assert_allclose(mapped, expected)
+
+
+@pytest.mark.unit
 def test_chunk_size_alias_and_batch_size_precedence():
     """The legacy name should be used only when batch_size remains unset."""
     x = jnp.arange(6.0)
