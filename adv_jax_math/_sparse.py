@@ -193,6 +193,7 @@ def sparse_pullback(
     chunk_reduction=identity,
     strip_dim0=False,
     shard=False,
+    mesh=None,
     higher_order=False,
     **kwargs,
 ):
@@ -246,6 +247,9 @@ def sparse_pullback(
         remainder is evaluated once per device, and a final global remainder is
         evaluated once overall. The input length need not be divisible by either
         the device count or ``batch_size``. Default is ``False``.
+    mesh : jax.sharding.Mesh or None
+        Optional one-dimensional mesh with an ``AxisType.Auto`` axis to use when
+        ``shard=True``. Default is ``None``, which uses all available devices.
     higher_order : bool
         Whether to support higher-order differentiation with the HiJAX backend
         at the expense of evaluating the primal ``fn`` twice. The custom-VJP
@@ -281,6 +285,7 @@ def sparse_pullback(
             reduction,
             chunk_reduction,
             True,
+            mesh,
             y,
         )
 

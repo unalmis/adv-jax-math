@@ -653,6 +653,51 @@ def test_sharded_chunked_batching():
 
 
 @pytest.mark.unit
+def test_sharded_batching_accepts_caller_auto_mesh():
+    """A caller mesh should select devices and retain compatible input layout."""
+    _run_forced_cpu_devices("""
+        import numpy as np
+
+        import jax
+        import jax.numpy as jnp
+        from jax.sharding import AxisType, NamedSharding, PartitionSpec
+
+        from adv_jax_math._batch import batch_map, batch_vmap
+
+        assert jax.device_count() == 4
+        mesh = jax.make_mesh(
+            (2,),
+            ("data",),
+            devices=jax.devices()[:2],
+            axis_types=(AxisType.Auto,),
+        )
+        input_sharding = NamedSharding(mesh, PartitionSpec("data"))
+        x = jax.device_put(jnp.arange(12.0), input_sharding)
+
+        vmapped = batch_vmap(
+            lambda value: value**2,
+            batch_size=2,
+            shard=True,
+            mesh=mesh,
+        )(x)
+        mapped = batch_map(
+            lambda values: values**2,
+            x,
+            batch_size=2,
+            shard=True,
+            mesh=mesh,
+        )
+
+        np.testing.assert_allclose(mapped, vmapped)
+        np.testing.assert_allclose(mapped, x**2)
+        assert mapped.sharding.mesh == mesh
+        assert vmapped.sharding.mesh == mesh
+        assert not mapped.sharding.is_fully_replicated
+        assert not vmapped.sharding.is_fully_replicated
+        """)
+
+
+@pytest.mark.unit
 def test_make_shardable():
     """Test that sharding works."""
     _run_forced_cpu_devices("""
