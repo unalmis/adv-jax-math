@@ -136,14 +136,14 @@ _SPARSE_PULLBACK_CASES = (
     pytest.param(
         _nested_batched_fun,
         _nested_batched_fun,
-        {"shard_input_data": True},
+        {"shard": True},
         jnp.linspace(0.5, 1.5, 10),
         id="sharded",
     ),
     pytest.param(
         _nested_batched_fun,
         _nested_batched_fun,
-        {"batch_size": 4, "shard_input_data": True},
+        {"batch_size": 4, "shard": True},
         jnp.linspace(0.5, 1.5, 10),
         id="sharded-chunked",
     ),
@@ -154,7 +154,7 @@ _SPARSE_PULLBACK_CASES = (
             "batch_size": 4,
             "reduction": jnp.add,
             "chunk_reduction": jnp.sum,
-            "shard_input_data": True,
+            "shard": True,
         },
         jnp.array(1.7),
         id="sharded-reduced",
@@ -165,7 +165,7 @@ _SPARSE_PULLBACK_CASES = (
         {
             "batch_size": 1,
             "strip_dim0": True,
-            "shard_input_data": True,
+            "shard": True,
         },
         jnp.linspace(0.5, 1.5, 10),
         id="sharded-stripped",
@@ -221,7 +221,7 @@ class TestDerivative:
                         lambda z: z**2,
                         y,
                         batch_size=2,
-                        shard_input_data=True,
+                        shard=True,
                     ),
                     x**2,
                 ),
@@ -229,7 +229,7 @@ class TestDerivative:
                     lambda y: sparse_pullback(
                         lambda z: z**2,
                         y,
-                        shard_input_data=True,
+                        shard=True,
                     ),
                     x**2,
                 ),
@@ -239,7 +239,7 @@ class TestDerivative:
                         y,
                         batch_size=1,
                         strip_dim0=True,
-                        shard_input_data=True,
+                        shard=True,
                     ),
                     x**2,
                 ),
@@ -250,7 +250,7 @@ class TestDerivative:
                         batch_size=2,
                         reduction=jnp.add,
                         chunk_reduction=jnp.sum,
-                        shard_input_data=True,
+                        shard=True,
                     ),
                     jnp.sum(x**2),
                 ),
@@ -303,7 +303,7 @@ class TestDerivative:
                     tracked,
                     y,
                     batch_size=3,
-                    shard_input_data=True,
+                    shard=True,
                 )
                 actual = jax.jit(execution_fun)(execution_x)
                 actual.block_until_ready()
@@ -329,7 +329,7 @@ class TestDerivative:
                     lambda z: z**2,
                     y,
                     batch_size=2,
-                    shard_input_data=True,
+                    shard=True,
                 )
                 original_reshard = _batch._reshard_leaf_to_replicated
                 resharded_inputs = []
@@ -392,7 +392,7 @@ class TestDerivative:
                         lambda z: z**3,
                         y,
                         batch_size=2,
-                        shard_input_data=True,
+                        shard=True,
                         higher_order=True,
                     )
                 )
