@@ -298,8 +298,7 @@ def test_sharded_evaluation_combines_remainders(
     if not batch_module._SUPPORTS_SHARDED_BATCHING:
         pytest.skip("Sharded batching requires JAX 0.10.2 or newer")
 
-    def split(value, _axis, _num_devices, _mesh, *, normalize_explicit=False):
-        del normalize_explicit
+    def split(value, _axis, _num_devices, _mesh):
         return value[:split_at], value[split_at:]
 
     monkeypatch.setattr(batch_module, "_make_shardable", split)
@@ -694,6 +693,55 @@ def test_sharded_batching_accepts_caller_auto_mesh():
         assert vmapped.sharding.mesh == mesh
         assert not mapped.sharding.is_fully_replicated
         assert not vmapped.sharding.is_fully_replicated
+        """)
+
+
+@pytest.mark.unit
+def test_explicit_input_replicates_only_global_remainder():
+    """Preparing explicit input should not replicate its divisible prefix."""
+    _run_forced_cpu_devices("""
+        import jax
+        import jax.numpy as jnp
+        from jax.sharding import NamedSharding, PartitionSpec
+
+        import adv_jax_math._batch as batch_module
+
+        assert jax.device_count() == 4
+        caller_mesh = jax.make_mesh((4,), ("caller",))
+        batching_mesh = batch_module._make_automatic_mesh(4)
+        original_reshard = batch_module._reshard_leaf_to_replicated
+        resharded_shapes = []
+
+        def record_reshard(leaf, mesh):
+            resharded_shapes.append(leaf.shape)
+            return original_reshard(leaf, mesh)
+
+        batch_module._reshard_leaf_to_replicated = record_reshard
+        try:
+            even = jax.device_put(
+                jnp.arange(12.0),
+                NamedSharding(caller_mesh, PartitionSpec("caller")),
+            )
+            prefix, remainder = batch_module._make_shardable(
+                even, 0, 4, batching_mesh
+            )
+            assert not prefix.sharding.is_fully_replicated
+            assert remainder.size == 0
+            assert resharded_shapes == []
+
+            odd = jax.device_put(
+                jnp.arange(13.0),
+                NamedSharding(caller_mesh, PartitionSpec()),
+            )
+            prefix, remainder = batch_module._make_shardable(
+                odd, 0, 4, batching_mesh
+            )
+            assert not prefix.sharding.is_fully_replicated
+            assert remainder.shape == (1,)
+            assert remainder.sharding.is_fully_replicated
+            assert resharded_shapes == [(1,)]
+        finally:
+            batch_module._reshard_leaf_to_replicated = original_reshard
         """)
 
 

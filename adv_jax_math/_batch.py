@@ -210,17 +210,8 @@ def make_shardable(f, axis=0, num_devices=None):
     return _make_shardable(f, axis, num_devices, mesh)
 
 
-def _make_shardable(f, axis, num_devices, mesh, *, normalize_explicit=False):
+def _make_shardable(f, axis, num_devices, mesh):
     leaves, treedef = tree_flatten(f)
-    if normalize_explicit:
-        leaves = [
-            (
-                _reshard_leaf_to_replicated(leaf, mesh)
-                if _has_explicit_sharding(leaf)
-                else leaf
-            )
-            for leaf in leaves
-        ]
     out = [_shard(leaf, axis, num_devices, mesh) for leaf in leaves]
     sf = treedef.unflatten(f[0] for f in out)
     rf = treedef.unflatten(f[1] for f in out)
@@ -229,6 +220,7 @@ def _make_shardable(f, axis, num_devices, mesh, *, normalize_explicit=False):
 
 def _shard(f, axis, num_devices, mesh):
     axis = axis % f.ndim
+    has_explicit_sharding = _has_explicit_sharding(f)
     shardable_size = f.shape[axis] - (f.shape[axis] % num_devices)
     sf = f[Index.get(slice(0, shardable_size), axis, f.ndim)]
     rf = f[Index.get(slice(shardable_size, f.shape[axis]), axis, f.ndim)]
@@ -238,7 +230,13 @@ def _shard(f, axis, num_devices, mesh):
         *(None,) * (f.ndim - axis - 1),
     )
     sharding = NamedSharding(mesh, P)
-    if AxisType is not None and AxisType.Auto in mesh.axis_types:
+    if has_explicit_sharding:
+        # Change the divisible prefix directly to the batching layout. Replicate
+        # only the small global remainder that is evaluated on one device.
+        sf = jax.device_put(sf, sharding)
+        if rf.shape[axis]:
+            rf = _reshard_leaf_to_replicated(rf, mesh)
+    elif AxisType is not None and AxisType.Auto in mesh.axis_types:
         sf = jax.lax.with_sharding_constraint(sf, sharding)
     else:
         sf = jax.device_put(sf, sharding)
@@ -517,7 +515,6 @@ def _evaluate_sharded_on_mesh(
                     0,
                     num_devices,
                     mesh,
-                    normalize_explicit=True,
                 )
                 if i in argnums
                 else (a, a)
