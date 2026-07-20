@@ -243,16 +243,17 @@ def test_batch_vmap_rejects_unsupported_axes():
 @pytest.mark.unit
 @pytest.mark.parametrize("batch_size", (None, 2))
 def test_sharded_batching_falls_back_when_unsupported(monkeypatch, batch_size):
-    """Older JAX installations should transparently use ordinary chunking."""
+    """Older JAX installations should report the ordinary-chunking fallback."""
     import adv_jax_math._batch as batch_module
 
     monkeypatch.setattr(batch_module, "_SUPPORTS_SHARDED_BATCHING", False)
     x = jnp.arange(5.0)
-    actual = batch_vmap(
-        lambda value: value + 1,
-        batch_size=batch_size,
-        shard=True,
-    )(x)
+    with pytest.warns(RuntimeWarning, match="requires JAX 0.10.2 or newer"):
+        actual = batch_vmap(
+            lambda value: value + 1,
+            batch_size=batch_size,
+            shard=True,
+        )(x)
     np.testing.assert_allclose(actual, x + 1)
 
 

@@ -590,6 +590,12 @@ def _evaluate_in_chunks(
     *args,
     **kwargs,
 ):
+    warnif(
+        shard and not _SUPPORTS_SHARDED_BATCHING,
+        RuntimeWarning,
+        "shard=True requires JAX 0.10.2 or newer; falling back to ordinary "
+        "chunking.",
+    )
     if shard and _SUPPORTS_SHARDED_BATCHING:
         return _evaluate_sharded(
             vmapped_fun,
