@@ -89,20 +89,17 @@ _SUPPORTS_SHARDED_BATCHING = (
     and reshard is not None
 )
 
+_unchunk = partial(tree_map, lambda y: y.reshape(-1, *y.shape[2:]))
 _concat = partial(tree_map, lambda y1, y2: jnp.concatenate((y1, y2)))
 _get_first_chunk = partial(tree_map, lambda x: x[0])
 
 
-def _reshape_with_sharding(x, shape, spec, mesh=None):
-    sharding = getattr(x, "sharding", None)
-    if mesh is None and isinstance(sharding, NamedSharding):
-        mesh = sharding.mesh
-    if mesh is not None:
-        out_sharding = NamedSharding(mesh, spec)
-        if AxisType is not None and AxisType.Auto in mesh.axis_types:
-            return jax.lax.with_sharding_constraint(x.reshape(shape), out_sharding)
-        if _HAS_LAX_RESHAPE_OUT_SHARDING:
-            return jax.lax.reshape(x, shape, out_sharding=out_sharding)
+def _reshape_sharded(x, shape, spec, mesh):
+    out_sharding = NamedSharding(mesh, spec)
+    if AxisType is not None and AxisType.Auto in mesh.axis_types:
+        return jax.lax.with_sharding_constraint(x.reshape(shape), out_sharding)
+    if _HAS_LAX_RESHAPE_OUT_SHARDING:
+        return jax.lax.reshape(x, shape, out_sharding=out_sharding)
     return x.reshape(shape)
 
 
@@ -129,19 +126,8 @@ def _has_explicit_sharding(x):
 
 
 def _concat_resharded_to_replicated(x, y, mesh):
-    return _concat(
-        tree_map(lambda leaf: _reshard_leaf_to_replicated(leaf, mesh), x),
-        tree_map(lambda leaf: _reshard_leaf_to_replicated(leaf, mesh), y),
-    )
-
-
-def _unchunk_leaf(y):
-    shape = (y.shape[0] * y.shape[1], *y.shape[2:])
-    spec = PartitionSpec("x", *(None,) * (y.ndim - 2))
-    return _reshape_with_sharding(y, shape, spec)
-
-
-_unchunk = partial(tree_map, _unchunk_leaf)
+    fun = partial(_reshard_leaf_to_replicated, mesh=mesh)
+    return _concat(tree_map(fun, x), tree_map(fun, y))
 
 
 def _scan_append(f, x, reduction=None, carry_init_fun=None):
@@ -246,28 +232,28 @@ def _to_device_local_leaf(x, num_devices, mesh):
     shape = (num_devices, local_size, *x.shape[1:])
     # Device-local layout: one shard per device, with an unsharded local axis.
     spec = PartitionSpec("x", *(None,) * x.ndim)
-    return _reshape_with_sharding(x, shape, spec, mesh)
+    return _reshape_sharded(x, shape, spec, mesh)
 
 
-def _flatten_device_local_leaf(x, mesh=None):
+def _flatten_device_local_leaf(x, mesh):
     shape = (x.shape[0] * x.shape[1], *x.shape[2:])
     spec = PartitionSpec("x", *(None,) * (x.ndim - 2))
-    return _reshape_with_sharding(x, shape, spec, mesh)
+    return _reshape_sharded(x, shape, spec, mesh)
 
 
-def _flat_to_device_local_leaf(x, num_devices, local_size, mesh=None):
+def _flat_to_device_local_leaf(x, num_devices, local_size, mesh):
     shape = (num_devices, local_size, *x.shape[1:])
     spec = PartitionSpec("x", None, *(None,) * (x.ndim - 1))
-    return _reshape_with_sharding(x, shape, spec, mesh)
+    return _reshape_sharded(x, shape, spec, mesh)
 
 
-def _batch_device_local_leaf(x, batch_size, mesh=None):
+def _batch_device_local_leaf(x, batch_size, mesh):
     local_size = x.shape[1]
     num_chunks = local_size // batch_size
     chunked_size = num_chunks * batch_size
     full = x[:, :chunked_size]
     # Scan chunk layout after moveaxis: (num_chunks, num_devices, batch_size, ...).
-    full = _reshape_with_sharding(
+    full = _reshape_sharded(
         full,
         (x.shape[0], num_chunks, batch_size, *x.shape[2:]),
         PartitionSpec("x", None, None, *(None,) * (x.ndim - 2)),
@@ -276,15 +262,11 @@ def _batch_device_local_leaf(x, batch_size, mesh=None):
     return jnp.moveaxis(full, 1, 0)
 
 
-def _device_local_remainder_leaf(x, chunked_size):
-    return x[:, chunked_size:]
-
-
-def _unbatch_device_local_leaf(y, mesh=None):
+def _unbatch_device_local_leaf(y, mesh):
     y = jnp.moveaxis(y, 0, 1)
     shape = (y.shape[0], y.shape[1] * y.shape[2], *y.shape[3:])
     spec = PartitionSpec("x", None, *(None,) * (y.ndim - 3))
-    return _reshape_with_sharding(y, shape, spec, mesh)
+    return _reshape_sharded(y, shape, spec, mesh)
 
 
 _concat_device_local = partial(
@@ -292,11 +274,11 @@ _concat_device_local = partial(
 )
 
 
-def _flatten_device_local(x, mesh=None):
+def _flatten_device_local(x, mesh):
     return tree_map(lambda y: _flatten_device_local_leaf(y, mesh), x)
 
 
-def _unbatch_device_local(x, mesh=None):
+def _unbatch_device_local(x, mesh):
     return tree_map(lambda y: _unbatch_device_local_leaf(y, mesh), x)
 
 
@@ -304,18 +286,18 @@ def _to_device_local(x, num_devices, mesh):
     return tree_map(lambda y: _to_device_local_leaf(y, num_devices, mesh), x)
 
 
-def _flat_to_device_local(x, num_devices, local_size, mesh=None):
+def _flat_to_device_local(x, num_devices, local_size, mesh):
     return tree_map(
         lambda y: _flat_to_device_local_leaf(y, num_devices, local_size, mesh), x
     )
 
 
-def _batch_device_local(x, batch_size, mesh=None):
+def _batch_device_local(x, batch_size, mesh):
     return tree_map(lambda y: _batch_device_local_leaf(y, batch_size, mesh), x)
 
 
 def _device_local_remainder(x, chunked_size):
-    return tree_map(lambda y: _device_local_remainder_leaf(y, chunked_size), x)
+    return tree_map(lambda y: y[:, chunked_size:], x)
 
 
 def _scan_device_local_chunks(
@@ -466,12 +448,7 @@ def _evaluate_on_first_device(
         # back only to the device that evaluated ``fun``. This avoids both
         # duplicate primal work and duplicate gradient contributions.
         return tree_map(
-            lambda leaf: jax.lax.all_gather(
-                leaf,
-                "x",
-                axis=0,
-                tiled=False,
-            )[0],
+            lambda leaf: jax.lax.all_gather(leaf, "x", axis=0, tiled=False)[0],
             out,
         )
 
@@ -584,9 +561,7 @@ def _evaluate_in_chunks(
     *args,
     **kwargs,
 ):
-    shard_input_data = shard_input_data and _SUPPORTS_SHARDED_BATCHING
-
-    if shard_input_data:
+    if shard_input_data and _SUPPORTS_SHARDED_BATCHING:
         return _evaluate_sharded(
             vmapped_fun,
             batch_size,
@@ -639,8 +614,16 @@ def _parse_in_axes(in_axes):
     return in_axes, argnums
 
 
-def _map_stripped(fun, x):
-    return vmap(fun)(x)
+def _parse_batch_size(batch_size, kwargs):
+    unexpected = kwargs.keys() - {"chunk_size"}
+    errorif(
+        unexpected,
+        ValueError,
+        f"Unexpected keyword argument(s): {', '.join(sorted(unexpected))}",
+    )
+    if batch_size is None and "chunk_size" in kwargs:
+        batch_size = kwargs["chunk_size"]
+    return batch_size
 
 
 def batch_vmap(
@@ -652,23 +635,17 @@ def batch_vmap(
     reduction=None,
     chunk_reduction=identity,
     shard_input_data=False,
+    **kwargs,
 ):
     """Behaves like ``vmap`` but uses scan to chunk the computations in smaller chunks.
 
     Warnings
     --------
-    - https://github.com/PlasmaControl/DESC/issues/1599
     - https://github.com/jax-ml/jax/issues/26689
     - https://github.com/jax-ml/jax/issues/27591
     - https://github.com/jax-ml/jax/issues/31919
-    - Due to an actively worked on issue in JAX,
-      https://docs.jax.dev/en/latest/jep/
-      2026-custom-derivatives.html#main-problem-descriptions,
-      this function can simply ignore custom derivative rules
-      of the function in wraps if ``batch_size`` is not ``None``,
-      and therefore can damp the effeciency gains of ``sparse_pullback``.
-      Use ``batch_map`` instead to avoid this,
-      or try to make a hack with jax.custom_transforms to bypass this.
+    - https://docs.jax.dev/en/latest/jep/
+      2026-custom-derivatives.html#main-problem-descriptions.
     - Only out axes = 0 is supported.
 
     See Also
@@ -687,6 +664,7 @@ def batch_vmap(
         Size to split computation into chunks.
         If no chunking should be done or the chunk size is the full input
         then supply ``None``.
+        ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
     reduction : callable or None
         Binary reduction operation.
         Should take two arguments and return one output, e.g. ``jnp.add``.
@@ -708,6 +686,7 @@ def batch_vmap(
         A vectorised and chunked function.
 
     """
+    batch_size = _parse_batch_size(batch_size, kwargs)
     in_axes, argnums = _parse_in_axes(in_axes)
     f = vmap(f, in_axes=in_axes)
     if batch_size is None and not shard_input_data:
@@ -733,6 +712,7 @@ def batch_map(
     chunk_reduction=identity,
     strip_dim0=False,
     shard_input_data=False,
+    **kwargs,
 ):
     """Compute ``chunk_reduction(fun(fun_input))`` in batches.
 
@@ -769,6 +749,7 @@ def batch_map(
     batch_size : int or None
         Size of batches. If no batching should be done or the batch size is the
         full input then supply ``None``.
+        ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
     reduction : callable or None
         Binary reduction operation.
         Should take two arguments and return one output, e.g. ``jnp.add``.
@@ -795,12 +776,13 @@ def batch_map(
         Returns ``chunk_reduction(fun(fun_input))``.
 
     """
+    batch_size = _parse_batch_size(batch_size, kwargs)
     if batch_size is None and not shard_input_data:
         return chunk_reduction(fun(fun_input))
     if strip_dim0 and batch_size == 1:
         if shard_input_data:
             return _evaluate_in_chunks(
-                partial(_map_stripped, fun),
+                vmap(fun),
                 batch_size,
                 (0,),
                 reduction,
@@ -822,7 +804,7 @@ def batch_map(
 
 
 def batch_vectorize(  # noqa: C901
-    pyfunc, *, excluded=frozenset(), signature=None, batch_size=None
+    pyfunc, *, excluded=frozenset(), signature=None, batch_size=None, **kwargs
 ):
     """Define a vectorized function with broadcasting and batching.
 
@@ -864,6 +846,7 @@ def batch_vectorize(  # noqa: C901
     batch_size : int, optional
         Number of mapped elements evaluated per batch. By default, all mapped
         elements are evaluated together, matching :func:`jax.numpy.vectorize`.
+        ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
 
     Returns
     -------
@@ -871,6 +854,7 @@ def batch_vectorize(  # noqa: C901
         Batch-vectorized version of the given function.
 
     """
+    batch_size = _parse_batch_size(batch_size, kwargs)
     errorif(
         any(not isinstance(exclude, (str, int)) for exclude in excluded),
         TypeError,
@@ -991,6 +975,7 @@ def batch_jacfwd(
     holomorphic=False,
     *,
     batch_size=None,
+    **kwargs,
 ):
     """Jacobian of ``fun`` evaluated column-by-column using forward-mode AD.
 
@@ -1017,6 +1002,7 @@ def batch_jacfwd(
     batch_size: int
         The size of the batches to pass to vmap. If None, defaults to the largest
         possible batch_size.
+        ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
 
     Returns
     -------
@@ -1026,6 +1012,7 @@ def batch_jacfwd(
         then a pair of (jacobian, auxiliary_data) is returned.
 
     """
+    batch_size = _parse_batch_size(batch_size, kwargs)
     check_callable(fun)
     argnums = _ensure_index(argnums)
 
@@ -1068,6 +1055,7 @@ def batch_jacrev(
     allow_int=False,
     *,
     batch_size=None,
+    **kwargs,
 ):
     """Jacobian of ``fun`` evaluated row-by-row using reverse-mode AD.
 
@@ -1098,6 +1086,7 @@ def batch_jacrev(
     batch_size: int
         The size of the batches to pass to vmap. If None, defaults to the largest
         possible batch_size.
+        ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
 
     Returns
     -------
@@ -1107,6 +1096,7 @@ def batch_jacrev(
         then a pair of (jacobian, auxiliary_data) is returned.
 
     """
+    batch_size = _parse_batch_size(batch_size, kwargs)
     check_callable(fun)
     argnums = _ensure_index(argnums)
 

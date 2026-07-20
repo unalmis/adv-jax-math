@@ -5,8 +5,8 @@ adv-jax-math
 
 |Docs| |UnitTests| |Codecov|
 
-``adv-jax-math`` provides automatic-differentiation and batching
-utilities for JAX.
+``adv-jax-math`` provides batching and sharding utilities for vectorization and
+differentiation in JAX.
 
 Installation
 ============
@@ -26,8 +26,7 @@ Licensing
 Copyright (C) 2024 Kaya Unalmis.
 
 ``adv-jax-math`` is licensed under the `GNU Lesser General Public License,
-version 3`_. Portions adapted from JAX retain their original attribution
-notices in the source.
+version 3`_.
 
 .. _GNU Lesser General Public License, version 3:
    https://github.com/unalmis/adv-jax-math/blob/main/LICENSE
