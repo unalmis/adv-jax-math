@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from adv_jax_math._batch import (
+    _MAKE_MESH_KWARGS,
     batch_jacfwd,
     batch_jacrev,
     batch_map,
@@ -208,7 +209,12 @@ def test_chunked_batching_preserves_caller_sharding():
     """Ordinary chunking should not introduce a library-owned mesh axis."""
     from jax.sharding import NamedSharding, PartitionSpec
 
-    mesh = jax.make_mesh((1,), ("caller",), devices=jax.devices()[:1])
+    mesh = jax.make_mesh(
+        (1,),
+        ("caller",),
+        devices=jax.devices()[:1],
+        **_MAKE_MESH_KWARGS,
+    )
     sharding = NamedSharding(mesh, PartitionSpec())
     x = jax.device_put(jnp.arange(8.0), sharding)
 
