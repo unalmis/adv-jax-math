@@ -541,6 +541,7 @@ def test_sharded_chunked_batching():
 
         import jax
         import jax.numpy as jnp
+        from jax.sharding import NamedSharding, PartitionSpec
         from packaging import version
 
         from adv_jax_math._batch import batch_map, batch_vmap
@@ -646,6 +647,24 @@ def test_sharded_chunked_batching():
         )
 
         if version.parse(jax.__version__) >= version.parse("0.10.2"):
+            caller_mesh = jax.make_mesh((4,), ("caller",))
+            explicit_small_x = jax.device_put(
+                small_x,
+                NamedSharding(caller_mesh, PartitionSpec()),
+            )
+            np.testing.assert_allclose(
+                small_fun(explicit_small_x),
+                explicit_small_x**2,
+            )
+            np.testing.assert_allclose(
+                jax.jit(small_fun)(explicit_small_x),
+                explicit_small_x**2,
+            )
+            np.testing.assert_allclose(
+                jax.grad(lambda y: jnp.sum(small_fun(y)))(explicit_small_x),
+                2 * explicit_small_x,
+            )
+
             calls = []
 
             def record(local, *, global_shape):
@@ -732,6 +751,8 @@ def test_sharded_batching_accepts_caller_auto_mesh():
 def test_explicit_input_replicates_only_global_remainder():
     """Preparing explicit input should not replicate its divisible prefix."""
     _run_forced_cpu_devices("""
+        import numpy as np
+
         import jax
         import jax.numpy as jnp
         from jax.sharding import NamedSharding, PartitionSpec
@@ -772,6 +793,33 @@ def test_explicit_input_replicates_only_global_remainder():
             assert remainder.shape == (1,)
             assert remainder.sharding.is_fully_replicated
             assert resharded_shapes == [(1,)]
+
+            small = jax.device_put(
+                jnp.arange(3.0),
+                NamedSharding(caller_mesh, PartitionSpec()),
+            )
+            prefix, remainder = batch_module._make_shardable(
+                small, 0, 4, batching_mesh
+            )
+            assert prefix.shape == (0,)
+            assert remainder.shape == (3,)
+            assert remainder.sharding.is_fully_replicated
+            np.testing.assert_allclose(remainder, small)
+            assert resharded_shapes == [(1,), (3,)]
+
+            prefix, remainder = batch_module.make_shardable(
+                even, num_devices=4
+            )
+            assert prefix.shape == (12,)
+            assert remainder.shape == (0,)
+            np.testing.assert_allclose(prefix, even)
+
+            prefix, remainder = batch_module.make_shardable(
+                small, num_devices=4
+            )
+            assert prefix.shape == (0,)
+            assert remainder.shape == (3,)
+            np.testing.assert_allclose(remainder, small)
         finally:
             batch_module._reshard_leaf_to_replicated = original_reshard
         """)

@@ -129,6 +129,11 @@ def _mesh_axis_name(mesh):
     return mesh.axis_names[0]
 
 
+def _empty_along_axis_like(x, axis):
+    shape = (*x.shape[:axis], 0, *x.shape[axis + 1 :])
+    return jnp.empty(shape, dtype=x.dtype)
+
+
 def _reshard_leaf_to_replicated(x, mesh):
     sharding = NamedSharding(mesh, PartitionSpec(*(None,) * x.ndim))
     return reshard(x, sharding)
@@ -231,6 +236,14 @@ def _shard(f, axis, num_devices, mesh):
     )
     sharding = NamedSharding(mesh, P)
     if has_explicit_sharding:
+        if shardable_size == 0:
+            # Empty slices of Explicit arrays require a mesh context on JAX
+            # 0.10.2. The empty prefix is not evaluated, so construct it
+            # independently and replicate the full remainder directly.
+            return (
+                _empty_along_axis_like(f, axis),
+                _reshard_leaf_to_replicated(f, mesh),
+            )
         # Change the divisible prefix directly to the batching layout. Replicate
         # only the small global remainder that is evaluated on one device.
         sf = jax.device_put(
@@ -240,9 +253,9 @@ def _shard(f, axis, num_devices, mesh):
             rf = f[remainder_index]
             rf = _reshard_leaf_to_replicated(rf, mesh)
         else:
-            # Slicing an empty explicit array requires a mesh context on JAX
-            # 0.10.2, so form the empty remainder after entering Auto mode.
-            rf = sf[Index.get(slice(0, 0), axis, sf.ndim)]
+            # Avoid slicing an empty Explicit array on JAX 0.10.2. The empty
+            # remainder is never evaluated, so it does not need a device layout.
+            rf = _empty_along_axis_like(f, axis)
     elif AxisType is not None and AxisType.Auto in mesh.axis_types:
         sf = f[prefix_index]
         rf = f[remainder_index]
