@@ -33,6 +33,8 @@ setup(
         "Intended Audience :: Science/Research",
         "Natural Language :: English",
         "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
         "Programming Language :: Python :: 3.14",
@@ -44,7 +46,7 @@ setup(
     packages=find_packages(exclude=["docs", "tests", "local", "report"]),
     include_package_data=True,
     install_requires=requirements,
-    python_requires=">=3.12",
+    python_requires=">=3.10",
     project_urls={
         "Issues Tracker": "https://github.com/unalmis/adv-jax-math/issues",
         "Contributing": "https://github.com/unalmis/adv-jax-math/blob/main/.github/CONTRIBUTING.rst",  # noqa: E501
