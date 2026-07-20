@@ -222,8 +222,8 @@ def _shard(f, axis, num_devices, mesh):
     axis = axis % f.ndim
     has_explicit_sharding = _has_explicit_sharding(f)
     shardable_size = f.shape[axis] - (f.shape[axis] % num_devices)
-    sf = f[Index.get(slice(0, shardable_size), axis, f.ndim)]
-    rf = f[Index.get(slice(shardable_size, f.shape[axis]), axis, f.ndim)]
+    prefix_index = Index.get(slice(0, shardable_size), axis, f.ndim)
+    remainder_index = Index.get(slice(shardable_size, f.shape[axis]), axis, f.ndim)
     P = PartitionSpec(
         *(None,) * axis,
         _mesh_axis_name(mesh),
@@ -233,12 +233,23 @@ def _shard(f, axis, num_devices, mesh):
     if has_explicit_sharding:
         # Change the divisible prefix directly to the batching layout. Replicate
         # only the small global remainder that is evaluated on one device.
-        sf = jax.device_put(sf, sharding)
-        if rf.shape[axis]:
+        sf = jax.device_put(
+            f if shardable_size == f.shape[axis] else f[prefix_index], sharding
+        )
+        if shardable_size < f.shape[axis]:
+            rf = f[remainder_index]
             rf = _reshard_leaf_to_replicated(rf, mesh)
+        else:
+            # Slicing an empty explicit array requires a mesh context on JAX
+            # 0.10.2, so form the empty remainder after entering Auto mode.
+            rf = sf[Index.get(slice(0, 0), axis, sf.ndim)]
     elif AxisType is not None and AxisType.Auto in mesh.axis_types:
+        sf = f[prefix_index]
+        rf = f[remainder_index]
         sf = jax.lax.with_sharding_constraint(sf, sharding)
     else:
+        sf = f[prefix_index]
+        rf = f[remainder_index]
         sf = jax.device_put(sf, sharding)
     return sf, rf
 
