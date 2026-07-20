@@ -192,7 +192,7 @@ def sparse_pullback(
     reduction=None,
     chunk_reduction=identity,
     strip_dim0=False,
-    shard_input_data=False,
+    shard=False,
     higher_order=False,
     **kwargs,
 ):
@@ -239,7 +239,7 @@ def sparse_pullback(
         to ``fn``; see notes. This flag only works if ``batch_size`` is one.
         It should be set to ``False`` if ``fn`` is wrapped in ``vmap``.
         Default is ``False``.
-    shard_input_data : bool
+    shard : bool
         Whether to shard ``y`` across devices before applying chunked batching.
         The divisible prefix is split across devices; when supplied,
         ``batch_size`` bounds the batches processed on each device. A local
@@ -263,7 +263,7 @@ def sparse_pullback(
 
     """
     batch_size = _parse_batch_size(batch_size, kwargs)
-    if shard_input_data:
+    if shard:
         sparse_fun = partial(
             (
                 _sparse_pullback_sharded_map_stripped

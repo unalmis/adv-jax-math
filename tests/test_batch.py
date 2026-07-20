@@ -63,17 +63,17 @@ def _assert_tree_allclose(actual, expected):
             id="reduced",
         ),
         pytest.param(
-            {"shard_input_data": True},
+            {"shard": True},
             False,
             id="sharded",
         ),
         pytest.param(
-            {"batch_size": 2, "shard_input_data": True},
+            {"batch_size": 2, "shard": True},
             False,
             id="sharded-chunked",
         ),
         pytest.param(
-            {"batch_size": 8, "shard_input_data": True},
+            {"batch_size": 8, "shard": True},
             False,
             id="sharded-full-batch",
         ),
@@ -81,7 +81,7 @@ def _assert_tree_allclose(actual, expected):
             {
                 "batch_size": 1,
                 "strip_dim0": True,
-                "shard_input_data": True,
+                "shard": True,
             },
             False,
             id="sharded-stripped",
@@ -91,7 +91,7 @@ def _assert_tree_allclose(actual, expected):
                 "batch_size": 2,
                 "reduction": jnp.add,
                 "chunk_reduction": jnp.sum,
-                "shard_input_data": True,
+                "shard": True,
             },
             True,
             id="sharded-reduced",
@@ -182,6 +182,13 @@ def test_batch_size_apis_reject_unexpected_keywords():
 
 
 @pytest.mark.unit
+def test_shard_input_data_is_not_supported():
+    """The renamed sharding option should not retain a compatibility alias."""
+    with pytest.raises(ValueError, match="Unexpected keyword.*shard_input_data"):
+        batch_vmap(lambda value: value, shard_input_data=True)
+
+
+@pytest.mark.unit
 def test_batch_vmap_rejects_unsupported_axes():
     """Only mapped axis zero and unmapped inputs are supported."""
     with pytest.raises(NotImplementedError, match="Only in_axes 0/None"):
@@ -199,7 +206,7 @@ def test_sharded_batching_falls_back_when_unsupported(monkeypatch, batch_size):
     actual = batch_vmap(
         lambda value: value + 1,
         batch_size=batch_size,
-        shard_input_data=True,
+        shard=True,
     )(x)
     np.testing.assert_allclose(actual, x + 1)
 
@@ -493,12 +500,12 @@ def test_sharded_chunked_batching():
                     lambda z: z + 1,
                     y,
                     batch_size=2,
-                    shard_input_data=True,
+                    shard=True,
                 ),
                 x + 1,
             ),
             (
-                lambda y: batch_map(lambda z: z + 1, y, shard_input_data=True),
+                lambda y: batch_map(lambda z: z + 1, y, shard=True),
                 x + 1,
             ),
             (
@@ -507,7 +514,7 @@ def test_sharded_chunked_batching():
                     y,
                     batch_size=1,
                     strip_dim0=True,
-                    shard_input_data=True,
+                    shard=True,
                 ),
                 x + 1,
             ),
@@ -516,7 +523,7 @@ def test_sharded_chunked_batching():
                     lambda z, scale: z * scale,
                     in_axes=(0, None),
                     batch_size=2,
-                    shard_input_data=True,
+                    shard=True,
                 )(y, 3.0),
                 x * 3,
             ),
@@ -524,7 +531,7 @@ def test_sharded_chunked_batching():
                 lambda y: batch_vmap(
                     lambda z, scale: z * scale,
                     in_axes=(0, None),
-                    shard_input_data=True,
+                    shard=True,
                 )(y, 3.0),
                 x * 3,
             ),
@@ -535,7 +542,7 @@ def test_sharded_chunked_batching():
                     batch_size=2,
                     reduction=jnp.add,
                     chunk_reduction=jnp.sum,
-                    shard_input_data=True,
+                    shard=True,
                 ),
                 jnp.sum(x),
             ),
@@ -548,7 +555,7 @@ def test_sharded_chunked_batching():
             lambda a, b: a - b,
             in_axes=(0, 0),
             batch_size=2,
-            shard_input_data=True,
+            shard=True,
         )(y, z)
         np.testing.assert_allclose(two_inputs(x, x[::-1]), x - x[::-1])
         np.testing.assert_allclose(jax.jit(two_inputs)(x, x[::-1]), x - x[::-1])
@@ -574,7 +581,7 @@ def test_sharded_chunked_batching():
                 tracked,
                 y,
                 batch_size=3,
-                shard_input_data=True,
+                shard=True,
             )
             actual = jax.jit(execution_fun)(execution_x)
             actual.block_until_ready()

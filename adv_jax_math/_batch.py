@@ -452,8 +452,10 @@ def _evaluate_on_first_device(
             out,
         )
 
-    in_specs = tree_map(lambda _: PartitionSpec(), args)
-    out_specs = tree_map(lambda _: PartitionSpec(), out_struct)
+    in_specs, out_specs = tree_map(
+        lambda _: PartitionSpec(),
+        (args, out_struct),
+    )
     out = jax.shard_map(
         evaluate_on_first,
         mesh=mesh,
@@ -557,11 +559,11 @@ def _evaluate_in_chunks(
     argnums,
     reduction=None,
     chunk_reduction=identity,
-    shard_input_data=False,
+    shard=False,
     *args,
     **kwargs,
 ):
-    if shard_input_data and _SUPPORTS_SHARDED_BATCHING:
+    if shard and _SUPPORTS_SHARDED_BATCHING:
         return _evaluate_sharded(
             vmapped_fun,
             batch_size,
@@ -634,7 +636,7 @@ def batch_vmap(
     batch_size=None,
     reduction=None,
     chunk_reduction=identity,
-    shard_input_data=False,
+    shard=False,
     **kwargs,
 ):
     """Behaves like ``vmap`` but uses scan to chunk the computations in smaller chunks.
@@ -671,7 +673,7 @@ def batch_vmap(
     chunk_reduction : callable
         Chunk-wise reduction operation.
         Should apply ``reduction`` along the mapped axis, e.g. ``jnp.add.reduce``.
-    shard_input_data : bool
+    shard : bool
         Whether to shard mapped input data across devices before applying
         chunked batching. The divisible prefix is split across devices; when
         supplied, ``batch_size`` bounds the batches processed on each device. A
@@ -689,7 +691,7 @@ def batch_vmap(
     batch_size = _parse_batch_size(batch_size, kwargs)
     in_axes, argnums = _parse_in_axes(in_axes)
     f = vmap(f, in_axes=in_axes)
-    if batch_size is None and not shard_input_data:
+    if batch_size is None and not shard:
         return lambda *args, **kwargs: chunk_reduction(f(*args, **kwargs))
     return partial(
         _evaluate_in_chunks,
@@ -698,7 +700,7 @@ def batch_vmap(
         argnums,
         reduction,
         chunk_reduction,
-        shard_input_data,
+        shard,
     )
 
 
@@ -711,7 +713,7 @@ def batch_map(
     reduction=None,
     chunk_reduction=identity,
     strip_dim0=False,
-    shard_input_data=False,
+    shard=False,
     **kwargs,
 ):
     """Compute ``chunk_reduction(fun(fun_input))`` in batches.
@@ -762,7 +764,7 @@ def batch_map(
         to ``fun``; see notes. This flag only works if ``batch_size`` is one.
         It should be set to ``False`` if ``fun`` is wrapped in ``vmap``.
         Default is ``False``.
-    shard_input_data : bool
+    shard : bool
         Whether to shard ``fun_input`` across devices before applying chunked
         batching. The divisible prefix is split across devices; when supplied,
         ``batch_size`` bounds the batches processed on each device. A local
@@ -777,10 +779,10 @@ def batch_map(
 
     """
     batch_size = _parse_batch_size(batch_size, kwargs)
-    if batch_size is None and not shard_input_data:
+    if batch_size is None and not shard:
         return chunk_reduction(fun(fun_input))
     if strip_dim0 and batch_size == 1:
-        if shard_input_data:
+        if shard:
             return _evaluate_in_chunks(
                 vmap(fun),
                 batch_size,
@@ -798,7 +800,7 @@ def batch_map(
         (0,),
         reduction,
         chunk_reduction,
-        shard_input_data,
+        shard,
         fun_input,
     )
 
