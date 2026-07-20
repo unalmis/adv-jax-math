@@ -605,6 +605,19 @@ def test_sharded_chunked_batching():
         np.testing.assert_allclose(two_inputs(x, x[::-1]), x - x[::-1])
         np.testing.assert_allclose(jax.jit(two_inputs)(x, x[::-1]), x - x[::-1])
 
+        small_x = jnp.arange(3.0)
+        small_fun = lambda y: batch_vmap(
+            lambda z: z**2,
+            batch_size=2,
+            shard=True,
+        )(y)
+        np.testing.assert_allclose(small_fun(small_x), small_x**2)
+        np.testing.assert_allclose(jax.jit(small_fun)(small_x), small_x**2)
+        np.testing.assert_allclose(
+            jax.grad(lambda y: jnp.sum(small_fun(y)))(small_x),
+            2 * small_x,
+        )
+
         if version.parse(jax.__version__) >= version.parse("0.10.2"):
             calls = []
 
