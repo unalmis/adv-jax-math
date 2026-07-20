@@ -131,6 +131,56 @@ def test_batch_vmap_reduction():
 
 
 @pytest.mark.unit
+def test_chunk_size_alias_and_batch_size_precedence():
+    """The legacy name should be used only when batch_size remains unset."""
+    x = jnp.arange(6.0)
+
+    def fill_with_batch_size(values):
+        return jnp.full_like(values, values.shape[0])
+
+    np.testing.assert_allclose(
+        batch_map(fill_with_batch_size, x, chunk_size=2),
+        jnp.full_like(x, 2),
+    )
+    np.testing.assert_allclose(
+        batch_map(fill_with_batch_size, x, batch_size=3, chunk_size=2),
+        jnp.full_like(x, 3),
+    )
+
+
+@pytest.mark.unit
+def test_public_batch_transforms_accept_chunk_size():
+    """All public batching transforms should accept the legacy keyword."""
+    x = jnp.arange(5.0)
+    expected = x**2 + 1
+
+    np.testing.assert_allclose(
+        batch_vmap(lambda value: value**2 + 1, chunk_size=2)(x), expected
+    )
+    np.testing.assert_allclose(
+        batch_vectorize(lambda value: value**2 + 1, chunk_size=2)(x), expected
+    )
+
+    jac_input = jnp.array([1.0, 2.0, 3.0])
+    fun = lambda value: jnp.array([value[0] * value[1], jnp.sin(value[2])])
+    np.testing.assert_allclose(
+        batch_jacfwd(fun, chunk_size=2)(jac_input),
+        jax.jacfwd(fun)(jac_input),
+    )
+    np.testing.assert_allclose(
+        batch_jacrev(fun, chunk_size=1)(jac_input),
+        jax.jacrev(fun)(jac_input),
+    )
+
+
+@pytest.mark.unit
+def test_batch_size_apis_reject_unexpected_keywords():
+    """The compatibility kwargs should not swallow misspelled arguments."""
+    with pytest.raises(TypeError, match="Unexpected keyword argument.*batch_sze"):
+        batch_vmap(lambda value: value, batch_sze=2)
+
+
+@pytest.mark.unit
 def test_batch_vmap_rejects_unsupported_axes():
     """Only mapped axis zero and unmapped inputs are supported."""
     with pytest.raises(NotImplementedError, match="Only in_axes 0/None"):
@@ -151,6 +201,22 @@ def test_sharded_batching_falls_back_when_unsupported(monkeypatch, batch_size):
         shard_input_data=True,
     )(x)
     np.testing.assert_allclose(actual, x + 1)
+
+
+@pytest.mark.unit
+def test_chunked_batching_preserves_caller_sharding():
+    """Ordinary chunking should not introduce a library-owned mesh axis."""
+    from jax.sharding import NamedSharding, PartitionSpec
+
+    mesh = jax.make_mesh((1,), ("caller",), devices=jax.devices()[:1])
+    sharding = NamedSharding(mesh, PartitionSpec())
+    x = jax.device_put(jnp.arange(8.0), sharding)
+
+    actual = batch_vmap(lambda value: value + 1, batch_size=2)(x)
+
+    np.testing.assert_allclose(actual, x + 1)
+    assert actual.sharding.mesh == mesh
+    assert actual.sharding.is_fully_replicated
 
 
 @pytest.mark.unit

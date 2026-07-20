@@ -109,6 +109,13 @@ _SPARSE_PULLBACK_CASES = (
         id="chunked",
     ),
     pytest.param(
+        _nested_batched_fun,
+        _nested_batched_fun,
+        {"chunk_size": 4},
+        jnp.linspace(0.5, 1.5, 10),
+        id="chunked-alias",
+    ),
+    pytest.param(
         partial(_sum_output, _nested_batched_fun),
         _nested_batched_fun,
         {

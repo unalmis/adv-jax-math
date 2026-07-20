@@ -16,6 +16,7 @@ from ._batch import (
     _concat,
     _evaluate_in_chunks,
     _get_first_chunk,
+    _parse_batch_size,
     _scanmap,
     _unchunk,
 )
@@ -40,17 +41,18 @@ def _mul_cotangent(p, *, g):
     return p * g.reshape(shape)
 
 
+def _contract_sparse_jvp(out_ndim, diagonal, tangent):
+    """Contract one Jacobian-diagonal leaf with its tangent."""
+    if diagonal is None:
+        return None
+    product = diagonal * tangent
+    return product.sum(axis=tuple(range(out_ndim, product.ndim)))
+
+
 if version.parse(jax.__version__) >= version.parse("0.11.0"):  # noqa: C901
     from equinox import internal as eqxi
     from jax._src.interpreters.ad import add_tangents
     from jax.experimental.hijax import VJPHiPrimitive, Zero, jvp_from_lin
-
-    def _contract_sparse_jvp(out_ndim, diagonal, tangent):
-        """Contract one Jacobian-diagonal leaf with its tangent."""
-        if diagonal is None:
-            return None
-        product = diagonal * tangent
-        return product.sum(axis=tuple(range(out_ndim, product.ndim)))
 
     class _SparsePullbackPrimitive(VJPHiPrimitive):
         jvp = jvp_from_lin
@@ -98,13 +100,11 @@ if version.parse(jax.__version__) >= version.parse("0.11.0"):  # noqa: C901
             return self(y, fn_dynamic) if self.higher_order else out, p
 
         def vjp_bwd_retval(self, p, g):
+            if isinstance(g, Zero):
+                return eqx.filter(self.in_avals, False)
             return (
-                eqx.filter(self.in_avals, False)
-                if isinstance(g, Zero)
-                else (
-                    tree_map(partial(_mul_cotangent, g=g), p),
-                    eqx.filter(self.in_avals[1], False),
-                )
+                tree_map(partial(_mul_cotangent, g=g), p),
+                eqx.filter(self.in_avals[1], False),
             )
 
     def _sparse_pullback(y, *, fn, higher_order):
@@ -180,13 +180,7 @@ def _sparse_pullback_sharded(fn, y, *, higher_order):
 
 
 def _sparse_pullback_sharded_map_stripped(fn, y, *, higher_order):
-    return jax.vmap(
-        partial(
-            _sparse_pullback_sharded,
-            fn,
-            higher_order=higher_order,
-        )
-    )(y)
+    return jax.vmap(partial(_sparse_pullback_sharded, fn, higher_order=higher_order))(y)
 
 
 def sparse_pullback(
@@ -200,6 +194,7 @@ def sparse_pullback(
     strip_dim0=False,
     shard_input_data=False,
     higher_order=False,
+    **kwargs,
 ):
     """Compute ``chunk_reduction(fn(fun_input))`` in batches with sparse pullbacks.
 
@@ -231,6 +226,7 @@ def sparse_pullback(
     batch_size : int or None
         Size of batches. If no batching should be done or the batch size is the
         full input then supply ``None``.
+        ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
     reduction : callable or None
         Binary reduction operation.
         Should take two arguments and return one output, e.g. ``jnp.add``.
@@ -266,6 +262,7 @@ def sparse_pullback(
     >>> out = sparse_pullback(fn, y)
 
     """
+    batch_size = _parse_batch_size(batch_size, kwargs)
     if shard_input_data:
         sparse_fun = partial(
             (
@@ -289,11 +286,7 @@ def sparse_pullback(
 
     if strip_dim0 and batch_size == 1:
         return _scanmap(
-            sparse_pullback_map(
-                fn,
-                _get_first_chunk(y),
-                higher_order=higher_order,
-            ),
+            sparse_pullback_map(fn, _get_first_chunk(y), higher_order=higher_order),
             0,
             reduction,
             identity,
@@ -302,9 +295,7 @@ def sparse_pullback(
     if batch_size is None or (n_elements := tree_leaves(y)[0].shape[0]) <= batch_size:
         return chunk_reduction(
             _sparse_pullback(
-                y,
-                fn=eqx.filter_closure_convert(fn, y),
-                higher_order=higher_order,
+                y, fn=eqx.filter_closure_convert(fn, y), higher_order=higher_order
             )
         )
 
@@ -312,11 +303,7 @@ def sparse_pullback(
     # Note that num_batches in _batch_and_remainder is always positive.
 
     y = _scanmap(
-        sparse_pullback_map(
-            fn,
-            _get_first_chunk(y),
-            higher_order=higher_order,
-        ),
+        sparse_pullback_map(fn, _get_first_chunk(y), higher_order=higher_order),
         0,
         reduction,
         chunk_reduction,
