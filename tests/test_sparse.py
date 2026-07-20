@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from contextlib import nullcontext
 from functools import partial
 from unittest.mock import Mock, patch
 
@@ -18,6 +19,7 @@ import pytest
 from packaging import version
 
 from adv_jax_math import sparse_pullback, sparse_pullback_map
+from adv_jax_math._batch import _SUPPORTS_SHARDED_BATCHING
 
 _HAS_HIJAX = version.parse(jax.__version__) >= version.parse("0.11.0")
 
@@ -721,7 +723,13 @@ def test_sparse_pullback_vjp(dense, sparse_fun, sparse_kwargs, cotangent):
     sparse = partial(sparse_pullback, sparse_fun, **sparse_kwargs)
 
     out, pullback = jax.vjp(dense, x)
-    got_out, got_pullback = jax.vjp(sparse, x)
+    warning = (
+        pytest.warns(RuntimeWarning, match="requires JAX 0.10.2 or newer")
+        if sparse_kwargs.get("shard") and not _SUPPORTS_SHARDED_BATCHING
+        else nullcontext()
+    )
+    with warning:
+        got_out, got_pullback = jax.vjp(sparse, x)
     _assert_tree_allclose(got_out, out)
     _assert_tree_allclose(got_pullback(cotangent)[0], pullback(cotangent)[0])
 

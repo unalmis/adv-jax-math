@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from contextlib import nullcontext
 
 import equinox as eqx
 import jax
@@ -16,6 +17,7 @@ import pytest
 
 from adv_jax_math._batch import (
     _MAKE_MESH_KWARGS,
+    _SUPPORTS_SHARDED_BATCHING,
     batch_jacfwd,
     batch_jacrev,
     batch_map,
@@ -102,7 +104,14 @@ def test_batch_map_modes(kwargs, reduce_output):
     """Batching modes should preserve values and requested reductions."""
     x = jnp.arange(5.0)
     expected = jnp.sum(x + 1) if reduce_output else x + 1
-    np.testing.assert_allclose(batch_map(lambda y: y + 1, x, **kwargs), expected)
+    warning = (
+        pytest.warns(RuntimeWarning, match="requires JAX 0.10.2 or newer")
+        if kwargs.get("shard") and not _SUPPORTS_SHARDED_BATCHING
+        else nullcontext()
+    )
+    with warning:
+        actual = batch_map(lambda y: y + 1, x, **kwargs)
+    np.testing.assert_allclose(actual, expected)
 
 
 @pytest.mark.unit
@@ -671,6 +680,10 @@ def test_sharded_chunked_batching():
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(
+    not _SUPPORTS_SHARDED_BATCHING,
+    reason="Caller-provided batching meshes require JAX 0.10.2 or newer",
+)
 def test_sharded_batching_accepts_caller_auto_mesh():
     """A caller mesh should select devices and retain compatible input layout."""
     _run_forced_cpu_devices("""
