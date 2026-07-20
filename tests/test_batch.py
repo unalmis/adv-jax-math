@@ -605,6 +605,24 @@ def test_sharded_chunked_batching():
         np.testing.assert_allclose(two_inputs(x, x[::-1]), x - x[::-1])
         np.testing.assert_allclose(jax.jit(two_inputs)(x, x[::-1]), x - x[::-1])
 
+        def elementwise(z):
+            return jnp.sin(z) + z**2
+
+        for batch_size in (None, 1, 2, 5):
+            mapped = lambda y: batch_map(
+                elementwise,
+                y,
+                batch_size=batch_size,
+                shard=True,
+            )
+            vmapped = batch_vmap(
+                elementwise,
+                batch_size=batch_size,
+                shard=True,
+            )
+            np.testing.assert_allclose(mapped(x), vmapped(x))
+            np.testing.assert_allclose(jax.jit(mapped)(x), jax.jit(vmapped)(x))
+
         small_x = jnp.arange(3.0)
         small_fun = lambda y: batch_vmap(
             lambda z: z**2,

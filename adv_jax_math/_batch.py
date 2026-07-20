@@ -704,10 +704,13 @@ def batch_vmap(
         ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
     reduction : callable or None
         Binary reduction operation.
-        Should take two arguments and return one output, e.g. ``jnp.add``.
+        Should take two arguments and return one output, e.g. ``jnp.add``, and
+        must be associative because partial chunk results are combined in an
+        implementation-dependent order.
     chunk_reduction : callable
         Chunk-wise reduction operation.
-        Should apply ``reduction`` along the mapped axis, e.g. ``jnp.add.reduce``.
+        Should summarize a chunk compatibly with ``reduction`` along the mapped
+        axis, e.g. ``jnp.add.reduce``.
     shard : bool
         Whether to shard mapped input data across devices before applying
         chunked batching. The divisible prefix is split across devices; when
@@ -715,7 +718,8 @@ def batch_vmap(
         local remainder is evaluated once per device, and a final global
         remainder is evaluated once overall. The mapped length need not be
         divisible by either the device count or ``batch_size``. Default is
-        ``False``.
+        ``False``. If a non-reduced output has a global remainder, the final
+        concatenated output is replicated across the mesh.
     mesh : jax.sharding.Mesh or None
         Optional one-dimensional mesh with an ``AxisType.Auto`` axis. Supplying
         a mesh selects the devices and topology used by ``shard=True`` and lets
@@ -770,6 +774,11 @@ def batch_map(
     However, the ``strip_dim0`` flag should cover the most common case
     of nesting calls where ``batch_size`` is one on the outermost call.
 
+    For a ``fun`` that accepts scalar and batched inputs elementwise,
+    ``batch_map(fun, inputs)`` is expected to match
+    ``batch_vmap(fun)(inputs)``. Functions whose results depend on other examples
+    in a chunk or on the chunk length do not satisfy this elementwise contract.
+
     If ``fun`` is natively vectorized, this can be preferable to ``batch_vmap``
     to reduce compilation time, avoid issues such as executing all branches of
     code conditioned on dynamic values, or avoid messing up the behavior of
@@ -796,11 +805,13 @@ def batch_map(
         ``chunk_size`` is accepted as an alias when ``batch_size`` is ``None``.
     reduction : callable or None
         Binary reduction operation.
-        Should take two arguments and return one output, e.g. ``jnp.add``.
+        Should take two arguments and return one output, e.g. ``jnp.add``, and
+        must be associative because partial chunk results are combined in an
+        implementation-dependent order.
     chunk_reduction : callable
         Chunk-wise reduction operation.
-        Should typically apply ``reduction`` along the mapped axis,
-        e.g. ``jnp.add.reduce``.
+        Should summarize a chunk compatibly with ``reduction`` along the mapped
+        axis, e.g. ``jnp.add.reduce``.
     strip_dim0 : bool
         Whether to strip the leading dim of ``fun_input`` before passing it
         to ``fun``; see notes. This flag only works if ``batch_size`` is one.
@@ -812,7 +823,9 @@ def batch_map(
         ``batch_size`` bounds the batches processed on each device. A local
         remainder is evaluated once per device, and a final global remainder is
         evaluated once overall. The input length need not be divisible by either
-        the device count or ``batch_size``. Default is ``False``.
+        the device count or ``batch_size``. Default is ``False``. If a non-reduced
+        output has a global remainder, the final concatenated output is replicated
+        across the mesh.
     mesh : jax.sharding.Mesh or None
         Optional one-dimensional mesh with an ``AxisType.Auto`` axis. Supplying
         a mesh selects the devices and topology used by ``shard=True`` and lets
