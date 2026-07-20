@@ -176,7 +176,7 @@ def test_public_batch_transforms_accept_chunk_size():
 @pytest.mark.unit
 def test_batch_size_apis_reject_unexpected_keywords():
     """The compatibility kwargs should not swallow misspelled arguments."""
-    with pytest.raises(TypeError, match="Unexpected keyword argument.*batch_sze"):
+    with pytest.raises(ValueError, match="Unexpected keyword argument.*batch_sze"):
         batch_vmap(lambda value: value, batch_sze=2)
 
 
