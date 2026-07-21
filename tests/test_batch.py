@@ -3,6 +3,7 @@
 
 """Tests for batching functions."""
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -102,6 +103,16 @@ def _assert_tree_allclose(actual, expected):
             },
             True,
             id="sharded-reduced",
+        ),
+        pytest.param(
+            {
+                "batch_size": 8,
+                "reduction": jnp.add,
+                "chunk_reduction": jnp.sum,
+                "shard": True,
+            },
+            True,
+            id="sharded-full-batch-reduced",
         ),
     ),
 )
@@ -293,6 +304,134 @@ def test_chunked_batching_preserves_caller_sharding():
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(
+    not _SUPPORTS_SHARDED_BATCHING,
+    reason="Caller-provided batching meshes require JAX 0.10.2 or newer",
+)
+def test_sharded_batching_validates_caller_mesh():
+    """Only one-dimensional automatic meshes should be accepted."""
+    from jax.sharding import AxisType
+
+    x = jnp.arange(4.0)
+    devices = jax.devices()[:1]
+    explicit_mesh = jax.make_mesh(
+        (1,),
+        ("explicit",),
+        devices=devices,
+        axis_types=(AxisType.Explicit,),
+    )
+    with pytest.raises(ValueError, match="AxisType.Auto"):
+        batch_map(lambda values: values + 1, x, shard=True, mesh=explicit_mesh)
+
+    two_dimensional_mesh = jax.make_mesh(
+        (1, 1),
+        ("rows", "columns"),
+        devices=devices,
+        axis_types=(AxisType.Auto, AxisType.Auto),
+    )
+    with pytest.raises(ValueError, match="one-dimensional"):
+        batch_map(
+            lambda values: values + 1,
+            x,
+            shard=True,
+            mesh=two_dimensional_mesh,
+        )
+
+    auto_mesh = jax.make_mesh(
+        (1,),
+        ("data",),
+        devices=devices,
+        axis_types=(AxisType.Auto,),
+    )
+    actual = batch_map(
+        lambda values: values + 1,
+        x,
+        batch_size=2,
+        shard=True,
+        mesh=auto_mesh,
+    )
+    np.testing.assert_allclose(actual, x + 1)
+    assert actual.sharding.mesh == auto_mesh
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    not _SUPPORTS_SHARDED_BATCHING,
+    reason="Explicit sharding requires JAX 0.10.2 or newer",
+)
+def test_sharded_batching_preserves_explicit_mapped_and_unmapped_inputs():
+    """Explicit inputs should retain values and cotangents through conversion."""
+    from jax.sharding import AxisType, NamedSharding, PartitionSpec
+
+    caller_mesh = jax.make_mesh(
+        (1,),
+        ("caller",),
+        devices=jax.devices()[:1],
+        axis_types=(AxisType.Explicit,),
+    )
+    sharding = NamedSharding(caller_mesh, PartitionSpec("caller"))
+    x = jax.device_put(jnp.arange(5.0), sharding)
+    weights = jax.device_put(jnp.arange(3.0), sharding)
+
+    def fun(values, context):
+        return batch_vmap(
+            lambda value, config: (
+                value + jnp.sum(config["weights"]) + config["offset"]
+            ),
+            in_axes=(0, None),
+            batch_size=2,
+            shard=True,
+        )(values, context)
+
+    context = {"weights": weights, "offset": 2.0}
+    expected = x + jnp.sum(weights) + 2.0
+    np.testing.assert_allclose(fun(x, context), expected)
+
+    grad_x, grad_weights = jax.grad(
+        lambda values, weights_: jnp.sum(
+            fun(values, {"weights": weights_, "offset": 2.0})
+        ),
+        argnums=(0, 1),
+    )(x, weights)
+    np.testing.assert_allclose(grad_x, jnp.ones_like(x))
+    np.testing.assert_allclose(grad_weights, x.size * jnp.ones_like(weights))
+
+
+@pytest.mark.unit
+def test_explicit_split_partition_logic(monkeypatch):
+    """Explicit prefixes and remainders should partition every input exactly."""
+    import adv_jax_math._batch as batch_module
+
+    class Mesh:
+        size = 4
+        axis_names = ("data",)
+
+    resharded_shapes = []
+    monkeypatch.setattr(batch_module, "_has_explicit_sharding", lambda _: True)
+    monkeypatch.setattr(batch_module, "NamedSharding", lambda *_: object())
+    monkeypatch.setattr(batch_module.jax, "device_put", lambda value, _: value)
+
+    def reshard(value, _mesh):
+        resharded_shapes.append(value.shape)
+        return value
+
+    monkeypatch.setattr(batch_module, "_reshard_leaf_to_replicated", reshard)
+
+    for size, expected_resharded_shapes in (
+        (12, []),
+        (13, [(1,)]),
+        (3, [(3,)]),
+    ):
+        values = np.arange(size, dtype=np.float32)
+        prefix, remainder = batch_module._shard(values, Mesh())
+        combined = np.concatenate((np.asarray(prefix), np.asarray(remainder)))
+        np.testing.assert_allclose(combined, values)
+        assert prefix.shape[0] % Mesh.size == 0
+        assert resharded_shapes == expected_resharded_shapes
+        resharded_shapes.clear()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("split_at", "reduction", "chunk_reduction"),
     (
@@ -379,20 +518,33 @@ def test_batched_jacobians_multiple_arguments_and_aux(batch_jacobian, jax_jacobi
 
 
 @pytest.mark.unit
-def test_argnums_partial2_fallback():
-    """Older JAX versions should use the callable argnums fallback."""
-    _run_forced_cpu_devices(
-        """
-        import numpy as np
+def test_older_jax_fallbacks(monkeypatch):
+    """Compatibility fallbacks should preserve batching and Jacobian results."""
+    from jax._src import api_util
 
-        import jax
-        import jax.numpy as jnp
-        from jax._src import api_util
+    import adv_jax_math._batch as batch_module
 
-        if hasattr(api_util, "argnums_partial2"):
-            del api_util.argnums_partial2
+    module_name = "adv_jax_math._batch_fallback_test"
+    spec = importlib.util.spec_from_file_location(module_name, batch_module.__file__)
+    assert spec is not None and spec.loader is not None
+    fallback_module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = fallback_module
+    try:
+        with monkeypatch.context() as patch:
+            patch.delattr(api_util, "argnums_partial2", raising=False)
+            patch.delattr(jax.sharding, "reshard", raising=False)
+            spec.loader.exec_module(fallback_module)
 
-        from adv_jax_math._batch import batch_jacfwd, batch_jacrev
+        assert not fallback_module._SUPPORTS_SHARDED_BATCHING
+
+        x = jnp.arange(5.0)
+        with pytest.warns(RuntimeWarning, match="requires JAX 0.10.2 or newer"):
+            actual = fallback_module.batch_vmap(
+                lambda value: value + 1,
+                batch_size=2,
+                shard=True,
+            )(x)
+        np.testing.assert_allclose(actual, x + 1)
 
         def fun(x, y, *, scale):
             return scale * jnp.array([x * y, x + 2 * y])
@@ -401,16 +553,15 @@ def test_argnums_partial2_fallback():
         kwargs = {"argnums": (-2, -1), "batch_size": 1}
         expected_kwargs = {"argnums": (-2, -1)}
         np.testing.assert_allclose(
-            batch_jacfwd(fun, **kwargs)(x, y, scale=0.5),
+            fallback_module.batch_jacfwd(fun, **kwargs)(x, y, scale=0.5),
             jax.jacfwd(fun, **expected_kwargs)(x, y, scale=0.5),
         )
         np.testing.assert_allclose(
-            batch_jacrev(fun, **kwargs)(x, y, scale=0.5),
+            fallback_module.batch_jacrev(fun, **kwargs)(x, y, scale=0.5),
             jax.jacrev(fun, **expected_kwargs)(x, y, scale=0.5),
         )
-        """,
-        num_devices=1,
-    )
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 @pytest.mark.unit
@@ -532,6 +683,12 @@ def test_batch_vectorize_matches_jax_rank_promotion_policy():
             expected = jnp.vectorize(jnp.add)(x, y)
         with pytest.warns(UserWarning, match="require rank promotion"):
             actual = batch_vectorize(jnp.add, batch_size=2)(x, y)
+    _assert_tree_allclose(actual, expected)
+
+    same_rank = jnp.arange(6.0).reshape(2, 3)
+    with jax.numpy_rank_promotion("raise"):
+        expected = jnp.vectorize(jnp.add)(x, same_rank)
+        actual = batch_vectorize(jnp.add, batch_size=2)(x, same_rank)
     _assert_tree_allclose(actual, expected)
 
 

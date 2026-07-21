@@ -3,12 +3,14 @@
 
 """Tests for autodiff."""
 
+import importlib.util
 import os
 import subprocess
 import sys
 import textwrap
 from contextlib import nullcontext
 from functools import partial
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import equinox as eqx
@@ -429,6 +431,24 @@ def test_sparse_pullback_preserves_none_cotangent_leaves():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
+def test_sparse_pullback_hijax_zero_cotangent():
+    """A symbolic zero output cotangent should zero every input cotangent."""
+    from jax.experimental.hijax import Zero
+
+    from adv_jax_math._sparse import _SparsePullbackPrimitive
+
+    aval = jax.typeof(jnp.arange(3.0))
+    primitive = SimpleNamespace(in_avals=(aval, (aval, None)))
+    cotangents = _SparsePullbackPrimitive.vjp_bwd_retval(
+        primitive,
+        p=None,
+        g=Zero(aval.to_tangent_aval()),
+    )
+    assert cotangents == (None, (None, None))
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _HAS_HIJAX, reason="HiJAX requires JAX 0.11 or newer")
 def test_sparse_pullback_hijax_jvp_and_linearize():
     """The HiJAX backend should contract and reuse pytree linearizations."""
     x = {
@@ -658,21 +678,26 @@ def test_sparse_pullback_hijax_jit_with_dynamic_closure():
 
 
 @pytest.mark.unit
-def test_sparse_pullback_legacy_backend():
+def test_sparse_pullback_legacy_backend(monkeypatch):
     """The custom-VJP backend should retain higher-order differentiation."""
-    _run_forced_cpu_devices(
-        """
-        import numpy as np
+    import adv_jax_math._sparse as sparse_module
 
-        import jax
-        import jax.numpy as jnp
-
-        jax.__version__ = "0.10.0"
-
-        from adv_jax_math import sparse_pullback, sparse_pullback_map
+    module_name = "adv_jax_math._sparse_legacy_test"
+    spec = importlib.util.spec_from_file_location(module_name, sparse_module.__file__)
+    assert spec is not None and spec.loader is not None
+    legacy_module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = legacy_module
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(jax, "__version__", "0.10.0")
+            spec.loader.exec_module(legacy_module)
 
         x = jnp.arange(1.0, 5.0)
-        wrapped = sparse_pullback_map(lambda y: y**3, x, higher_order=True)
+        wrapped = legacy_module.sparse_pullback_map(
+            lambda y: y**3,
+            x,
+            higher_order=True,
+        )
         out, pullback = jax.vjp(wrapped, x)
         np.testing.assert_allclose(out, x**3)
         np.testing.assert_allclose(
@@ -689,7 +714,7 @@ def test_sparse_pullback_legacy_backend():
 
         for transformed in (
             wrapped,
-            lambda y: sparse_pullback(
+            lambda y: legacy_module.sparse_pullback(
                 lambda z: z**3,
                 y,
                 batch_size=2,
@@ -704,9 +729,8 @@ def test_sparse_pullback_legacy_backend():
                 6 * x,
             )
             np.testing.assert_allclose(jax.hessian(scalar)(x), jnp.diag(6 * x))
-        """,
-        num_devices=1,
-    )
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 @pytest.mark.unit
