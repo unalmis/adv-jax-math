@@ -80,11 +80,11 @@ if version.parse(jax.__version__) >= version.parse("0.11.0"):  # noqa: C901
             out, p = self.vjp_fwd(nzs_in, y, fn_dynamic)
             return out, p, any(tree_leaves(nzs_in[0]))
 
-        def linearized(self, diagonal, y_dot, _fn_dot):
+        def linearized(self, p, y_dot, _fn_dot):
             contributions = tree_map(
                 _contract_sparse_jvp,
-                jax.tree.broadcast(self.out_aval.ndim, diagonal),
-                diagonal,
+                jax.tree.broadcast(self.out_aval.ndim, p),
+                p,
                 y_dot,
                 is_leaf=_is_none,
             )

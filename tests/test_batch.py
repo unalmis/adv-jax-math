@@ -665,6 +665,32 @@ def test_sharded_chunked_batching():
                 2 * explicit_small_x,
             )
 
+            explicit_context = jax.device_put(
+                jnp.arange(4.0),
+                NamedSharding(caller_mesh, PartitionSpec("caller")),
+            )
+            with_context = lambda y, context: batch_vmap(
+                lambda value, weights: value + jnp.sum(weights),
+                in_axes=(0, None),
+                batch_size=2,
+                shard=True,
+            )(y, context)
+            expected = x + jnp.sum(explicit_context)
+            np.testing.assert_allclose(with_context(x, explicit_context), expected)
+            np.testing.assert_allclose(
+                jax.jit(with_context)(x, explicit_context),
+                expected,
+            )
+            grad_x, grad_context = jax.grad(
+                lambda y, context: jnp.sum(with_context(y, context)),
+                argnums=(0, 1),
+            )(x, explicit_context)
+            np.testing.assert_allclose(grad_x, jnp.ones_like(x))
+            np.testing.assert_allclose(
+                grad_context,
+                x.size * jnp.ones_like(explicit_context),
+            )
+
             calls = []
 
             def record(local, *, global_shape):
