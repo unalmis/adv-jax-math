@@ -153,7 +153,7 @@ def _concat_resharded_to_replicated(x, y, mesh):
     return _concat(tree_map(fun, x), tree_map(fun, y))
 
 
-def _scan_append(f, x, reduction=None, carry_init_fun=None):
+def _scan_append(f, x, reduction=None):
     """Evaluate f element-wise in x while appending the results."""
 
     def body(carry, x):
@@ -169,9 +169,7 @@ def _scan_reduce(f, x, reduction=None):
     def body(carry, x):
         return reduction(carry, f(x)), None
 
-    carry_init = f(_get_first_chunk(x))
-    remaining_x = tree_map(lambda leaf: leaf[1:], x)
-    result, _ = scan(body, carry_init, remaining_x)
+    result, _ = scan(body, f(_get_first_chunk(x)), tree_map(lambda leaf: leaf[1:], x))
     return result
 
 
