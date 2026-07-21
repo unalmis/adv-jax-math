@@ -1,0 +1,164 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>adv-jax-math &mdash; adv-jax-math 0+untagged.1.g77045f4 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+      <link rel="stylesheet" type="text/css" href="_static/custom.css?v=c00a5260" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=b98fd3bc"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="_static/copybutton.js?v=f281be69"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="API Documentation" href="api.html" />
+    <link href="_static/custom.css" rel="stylesheet" type="text/css">
+
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search"  style="background: #3c4142" >
+
+          
+          
+          <a href="#">
+            
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Public API</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Documentation</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu"  style="background: #3c4142" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="#">adv-jax-math</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="#" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">adv-jax-math</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/index.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul><div class="rst-breadcrumbs-buttons" role="navigation" aria-label="Sequential page navigation">
+        <a href="api.html" class="btn btn-neutral float-right" title="API Documentation" accesskey="n">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+  </div>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="adv-jax-math">
+<h1>adv-jax-math<a class="headerlink" href="#adv-jax-math" title="Link to this heading"></a></h1>
+<p><a class="reference external" href="https://github.com/unalmis/adv-jax-math/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/unalmis/adv-jax-math?color=blue&amp;logo=open-source-initiative&amp;logoColor=white" /></a> <a class="reference external" href="https://github.com/unalmis/adv-jax-math/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/unalmis/adv-jax-math" /></a> <a class="reference external" href="https://pypi.org/project/adv-jax-math/"><img alt="PyPI" src="https://img.shields.io/pypi/v/adv-jax-math" /></a></p>
+<p><a class="reference external" href="https://unalmis.github.io/adv-jax-math/"><img alt="Documentation" src="https://github.com/unalmis/adv-jax-math/actions/workflows/docs.yml/badge.svg" /></a> <a class="reference external" href="https://github.com/unalmis/adv-jax-math/actions/workflows/unittest.yml"><img alt="UnitTests" src="https://github.com/unalmis/adv-jax-math/actions/workflows/unittest.yml/badge.svg" /></a> <a class="reference external" href="https://codecov.io/gh/unalmis/adv-jax-math"><img alt="Coverage" src="https://codecov.io/gh/unalmis/adv-jax-math/graph/badge.svg" /></a></p>
+<p><code class="docutils literal notranslate"><span class="pre">adv-jax-math</span></code> provides batching and sharding utilities for vectorization and
+differentiation in JAX.</p>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">adv-jax-math</span></code> is installable with <code class="docutils literal notranslate"><span class="pre">pip</span></code>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>adv-jax-math
+</pre></div>
+</div>
+<p>For full details, see the <a class="reference external" href="https://unalmis.github.io/adv-jax-math/">API documentation</a>.</p>
+</section>
+<section id="licensing">
+<h2>Licensing<a class="headerlink" href="#licensing" title="Link to this heading"></a></h2>
+<p>Copyright (C) 2024 Kaya Unalmis.</p>
+<p><code class="docutils literal notranslate"><span class="pre">adv-jax-math</span></code> is licensed under the <a class="reference external" href="https://github.com/unalmis/adv-jax-math/blob/main/LICENSE">GNU Lesser General Public License,
+version 3</a>.</p>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Public API</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Documentation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#batched-maps">Batched maps</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="_api/adv_jax_math.batch_jacfwd.html">adv_jax_math.batch_jacfwd</a></li>
+<li class="toctree-l3"><a class="reference internal" href="_api/adv_jax_math.batch_jacrev.html">adv_jax_math.batch_jacrev</a></li>
+<li class="toctree-l3"><a class="reference internal" href="_api/adv_jax_math.batch_map.html">adv_jax_math.batch_map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="_api/adv_jax_math.batch_vectorize.html">adv_jax_math.batch_vectorize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="_api/adv_jax_math.batch_vmap.html">adv_jax_math.batch_vmap</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#sparse-differentiation">Sparse differentiation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="_api/adv_jax_math.sparse_pullback.html">adv_jax_math.sparse_pullback</a></li>
+<li class="toctree-l3"><a class="reference internal" href="_api/adv_jax_math.sparse_pullback_map.html">adv_jax_math.sparse_pullback_map</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+<section id="indices-and-tables">
+<h2>Indices and tables<a class="headerlink" href="#indices-and-tables" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="genindex.html"><span class="std std-ref">Index</span></a></p></li>
+<li><p><a class="reference internal" href="py-modindex.html"><span class="std std-ref">Module Index</span></a></p></li>
+<li><p><a class="reference internal" href="search.html"><span class="std std-ref">Search Page</span></a></p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="api.html" class="btn btn-neutral float-right" title="API Documentation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Kaya Unalmis.
+      <span class="lastupdated">Last updated on Jul 21, 2026.
+      </span></p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

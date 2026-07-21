@@ -1,0 +1,183 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>adv_jax_math.batch_vmap &mdash; adv-jax-math 0+untagged.1.g77045f4 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+      <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=c00a5260" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=b98fd3bc"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="adv_jax_math.sparse_pullback" href="adv_jax_math.sparse_pullback.html" />
+    <link rel="prev" title="adv_jax_math.batch_vectorize" href="adv_jax_math.batch_vectorize.html" />
+    <link href="../_static/custom.css" rel="stylesheet" type="text/css">
+
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search"  style="background: #3c4142" >
+
+          
+          
+          <a href="../index.html">
+            
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Public API</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../api.html">API Documentation</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html#batched-maps">Batched maps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html#sparse-differentiation">Sparse differentiation</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu"  style="background: #3c4142" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">adv-jax-math</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../api.html">API Documentation</a></li>
+      <li class="breadcrumb-item active">adv_jax_math.batch_vmap</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/_api/adv_jax_math.batch_vmap.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul><div class="rst-breadcrumbs-buttons" role="navigation" aria-label="Sequential page navigation">
+        <a href="adv_jax_math.batch_vectorize.html" class="btn btn-neutral float-left" title="adv_jax_math.batch_vectorize" accesskey="p"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="adv_jax_math.sparse_pullback.html" class="btn btn-neutral float-right" title="adv_jax_math.sparse_pullback" accesskey="n">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+  </div>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="adv-jax-math-batch-vmap">
+<h1>adv_jax_math.batch_vmap<a class="headerlink" href="#adv-jax-math-batch-vmap" title="Link to this heading"></a></h1>
+<dl class="py function">
+<dt class="sig sig-object py" id="adv_jax_math.batch_vmap">
+<span class="sig-prename descclassname"><span class="pre">adv_jax_math.</span></span><span class="sig-name descname"><span class="pre">batch_vmap</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">f</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">/</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">in_axes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">batch_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">chunk_reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">&lt;function</span> <span class="pre">identity&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">**kwargs</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/unalmis/adv-jax-math/blob/77045f43086c14789c69ce90690fcc244e01bdb1/adv_jax_math/_batch.py#L639-L723"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#adv_jax_math.batch_vmap" title="Link to this definition"></a></dt>
+<dd><p>Behaves like <code class="docutils literal notranslate"><span class="pre">vmap</span></code> but uses scan to chunk the computations in smaller chunks.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<ul class="simple">
+<li><p><a class="reference external" href="https://github.com/jax-ml/jax/issues/26689">https://github.com/jax-ml/jax/issues/26689</a></p></li>
+<li><p><a class="reference external" href="https://github.com/jax-ml/jax/issues/27591">https://github.com/jax-ml/jax/issues/27591</a></p></li>
+<li><p><a class="reference external" href="https://github.com/jax-ml/jax/issues/31919">https://github.com/jax-ml/jax/issues/31919</a></p></li>
+<li><p><a class="reference external" href="https://docs.jax.dev/en/latest/jep/2026-custom-derivatives.html">https://docs.jax.dev/en/latest/jep/2026-custom-derivatives.html</a>
+#main-problem-descriptions.</p></li>
+<li><p>Only <code class="docutils literal notranslate"><span class="pre">out_axes=0</span></code> is supported.</p></li>
+</ul>
+</div>
+<div class="admonition seealso">
+<p class="admonition-title">See also</p>
+<dl class="simple">
+<dt><a class="reference internal" href="adv_jax_math.batch_map.html#adv_jax_math.batch_map" title="adv_jax_math.batch_map"><code class="xref py py-obj docutils literal notranslate"><span class="pre">batch_map</span></code></a></dt><dd><p>If the function supports native vectorization, use <code class="docutils literal notranslate"><span class="pre">batch_map</span></code> instead for the reasons discussed the docstring.</p>
+</dd>
+</dl>
+</div>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>f</strong> (<em>callable</em>) – The function to be vectorised.</p></li>
+<li><p><strong>in_axes</strong> (<em>int</em><em> or </em><em>None</em>) – The axes that should be scanned along. Only supports <code class="docutils literal notranslate"><span class="pre">0</span></code> or <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p></li>
+<li><p><strong>batch_size</strong> (<em>int</em><em> or </em><em>None</em>) – Size to split computation into chunks.
+If no chunking should be done or the chunk size is the full input
+then supply <code class="docutils literal notranslate"><span class="pre">None</span></code>.
+<code class="docutils literal notranslate"><span class="pre">chunk_size</span></code> is accepted as an alias when <code class="docutils literal notranslate"><span class="pre">batch_size</span></code> is <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p></li>
+<li><p><strong>reduction</strong> (<em>callable</em><em> or </em><em>None</em>) – Binary reduction operation.
+Should take two arguments and return one output, e.g. <code class="docutils literal notranslate"><span class="pre">jnp.add</span></code>, and
+must be associative because partial chunk results are combined in an
+implementation-dependent order.</p></li>
+<li><p><strong>chunk_reduction</strong> (<em>callable</em>) – Chunk-wise reduction operation.
+Should summarize a chunk compatibly with <code class="docutils literal notranslate"><span class="pre">reduction</span></code> along the mapped
+axis, e.g. <code class="docutils literal notranslate"><span class="pre">jnp.add.reduce</span></code>.</p></li>
+<li><p><strong>shard</strong> (<em>bool</em>) – Whether to shard mapped input data across devices before applying
+chunked batching. The divisible prefix is split across devices; when
+supplied, <code class="docutils literal notranslate"><span class="pre">batch_size</span></code> bounds the batches processed on each device. A
+local remainder is evaluated once per device, and a final global
+remainder is evaluated once overall. The mapped length need not be
+divisible by either the device count or <code class="docutils literal notranslate"><span class="pre">batch_size</span></code>. Default is
+<code class="docutils literal notranslate"><span class="pre">False</span></code>. If a non-reduced output has a global remainder, the final
+concatenated output is replicated across the mesh.</p></li>
+<li><p><strong>mesh</strong> (<em>jax.sharding.Mesh</em><em> or </em><em>None</em>) – Optional one-dimensional mesh with an <code class="docutils literal notranslate"><span class="pre">AxisType.Auto</span></code> axis. Supplying
+a mesh selects the devices and topology used by <code class="docutils literal notranslate"><span class="pre">shard=True</span></code> and lets
+already-sharded inputs retain a compatible layout. Default is <code class="docutils literal notranslate"><span class="pre">None</span></code>,
+which creates a mesh over all available devices.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><strong>f</strong> (<em>callable</em>) – A vectorised and chunked function.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="adv_jax_math.batch_vectorize.html" class="btn btn-neutral float-left" title="adv_jax_math.batch_vectorize" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="adv_jax_math.sparse_pullback.html" class="btn btn-neutral float-right" title="adv_jax_math.sparse_pullback" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Kaya Unalmis.
+      <span class="lastupdated">Last updated on Jul 21, 2026.
+      </span></p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
