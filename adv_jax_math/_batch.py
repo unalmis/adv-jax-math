@@ -749,18 +749,18 @@ def batch_map(
     of nesting calls where ``batch_size`` is one on the outermost call.
 
     For a ``fun`` that accepts scalar and batched inputs elementwise,
-    ``batch_map(fun, inputs)`` is expected to match
+    ``batch_map(fun,inputs)`` is expected to match
     ``batch_vmap(fun)(inputs)``. Functions whose results depend on other examples
     in a chunk or on the chunk length do not satisfy this elementwise contract.
 
     If ``fun`` is natively vectorized, this can be preferable to ``batch_vmap``
     to reduce compilation time, avoid issues such as executing all branches of
     code conditioned on dynamic values, or avoid messing up the behavior of
-    jvp's and vjp's under vmap, e.g.
-    https://docs.jax.dev/en/latest/jep/
-    2026-custom-derivatives.html#main-problem-descriptions.
+    ``jvp``'s and ``vjp``'s under vmap, e.g.
+    https://docs.jax.dev/en/latest/jep/2026-custom-derivatives.html
+    #main-problem-descriptions.
 
-    Only out axes = 0 is supported.
+    Only ``out_axes=0`` is supported.
 
     See Also
     --------
