@@ -112,7 +112,7 @@ def _validate_sharding_mesh(mesh):
     return mesh
 
 
-def _mesh_axis_name(mesh):
+def _axis_name(mesh):
     return mesh.axis_names[0]
 
 
@@ -199,7 +199,7 @@ def _shard(f, mesh):
     shardable_size = f.shape[0] - (f.shape[0] % num_devices)
     sharding = NamedSharding(
         mesh,
-        PartitionSpec(_mesh_axis_name(mesh), *(None,) * (f.ndim - 1)),
+        PartitionSpec(_axis_name(mesh), *(None,) * (f.ndim - 1)),
     )
     if has_explicit_sharding:
         if shardable_size == 0:
@@ -233,19 +233,19 @@ def _to_device_local_leaf(x, mesh):
     local_size = x.shape[0] // mesh.size
     shape = (mesh.size, local_size, *x.shape[1:])
     # Device-local layout: one shard per device, with an unsharded local axis.
-    spec = PartitionSpec(_mesh_axis_name(mesh), *(None,) * x.ndim)
+    spec = PartitionSpec(_axis_name(mesh), *(None,) * x.ndim)
     return _reshape_sharded(x, shape, spec, mesh)
 
 
 def _flatten_device_local_leaf(x, mesh):
     shape = (x.shape[0] * x.shape[1], *x.shape[2:])
-    spec = PartitionSpec(_mesh_axis_name(mesh), *(None,) * (x.ndim - 2))
+    spec = PartitionSpec(_axis_name(mesh), *(None,) * (x.ndim - 2))
     return _reshape_sharded(x, shape, spec, mesh)
 
 
 def _flat_to_device_local_leaf(x, local_size, mesh):
     shape = (mesh.size, local_size, *x.shape[1:])
-    spec = PartitionSpec(_mesh_axis_name(mesh), None, *(None,) * (x.ndim - 1))
+    spec = PartitionSpec(_axis_name(mesh), None, *(None,) * (x.ndim - 1))
     return _reshape_sharded(x, shape, spec, mesh)
 
 
@@ -259,7 +259,7 @@ def _batch_device_local_leaf(x, batch_size, mesh):
         full,
         (x.shape[0], num_chunks, batch_size, *x.shape[2:]),
         PartitionSpec(
-            _mesh_axis_name(mesh),
+            _axis_name(mesh),
             None,
             None,
             *(None,) * (x.ndim - 2),
@@ -272,7 +272,7 @@ def _batch_device_local_leaf(x, batch_size, mesh):
 def _unbatch_device_local_leaf(y, mesh):
     y = jnp.moveaxis(y, 0, 1)
     shape = (y.shape[0], y.shape[1] * y.shape[2], *y.shape[3:])
-    spec = PartitionSpec(_mesh_axis_name(mesh), None, *(None,) * (y.ndim - 3))
+    spec = PartitionSpec(_axis_name(mesh), None, *(None,) * (y.ndim - 3))
     return _reshape_sharded(y, shape, spec, mesh)
 
 
@@ -399,10 +399,11 @@ def _evaluate_sharded(
     *args,
     **kwargs,
 ):
-    if mesh is None:
-        mesh = _make_automatic_mesh(jax.device_count())
-    else:
-        mesh = _validate_sharding_mesh(mesh)
+    mesh = (
+        _make_automatic_mesh(jax.device_count())
+        if mesh is None
+        else _validate_sharding_mesh(mesh)
+    )
     return _evaluate_sharded_on_mesh(
         fun,
         batch_size,
@@ -426,7 +427,7 @@ def _evaluate_on_first_device(
     **kwargs,
 ):
     """Evaluate replicated inputs on mesh index zero and broadcast the output."""
-    axis_name = _mesh_axis_name(mesh)
+    axis_name = _axis_name(mesh)
 
     def evaluate(args_):
         return _evaluate_in_chunks(
@@ -651,9 +652,9 @@ def batch_vmap(
     - https://github.com/jax-ml/jax/issues/26689
     - https://github.com/jax-ml/jax/issues/27591
     - https://github.com/jax-ml/jax/issues/31919
-    - https://docs.jax.dev/en/latest/jep/
-      2026-custom-derivatives.html#main-problem-descriptions.
-    - Only out axes = 0 is supported.
+    - https://docs.jax.dev/en/latest/jep/2026-custom-derivatives.html
+      #main-problem-descriptions.
+    - Only ``out_axes=0`` is supported.
 
     See Also
     --------
