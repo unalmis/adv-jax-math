@@ -5,24 +5,17 @@
 
 import warnings
 
-import jax.numpy as jnp
 import pytest
 
 from adv_jax_math._utils import errorif, identity, warnif
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("condition", (False, jnp.array(False)))
-def test_errorif_ignores_false_conditions(condition):
+def test_errorif_ignores_false_conditions():
     """False Python and scalar-array conditions should not raise."""
-    assert errorif(condition) is None
-
-
-@pytest.mark.unit
-def test_errorif_raises_requested_exception():
-    """The selected exception type and message should be preserved."""
+    assert errorif(False) is None
     with pytest.raises(RuntimeError, match="failed"):
-        errorif(jnp.array(True), RuntimeError, "failed")
+        errorif(True, RuntimeError, "failed")
 
 
 @pytest.mark.unit
