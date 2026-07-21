@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 
 from adv_jax_math._utils import (
-    Index,
     asarray_inexact,
     ensure_tuple,
     errorif,
@@ -20,14 +19,6 @@ from adv_jax_math._utils import (
     setdefault,
     warnif,
 )
-
-
-@pytest.mark.unit
-def test_index_builds_axis_selectors():
-    """Index should preserve direct indexing and expand axis selections."""
-    direct = Index[1:3]
-    assert direct == slice(1, 3)
-    assert Index.get(2, axis=-1, ndim=3) == (slice(None), slice(None), 2)
 
 
 @pytest.mark.unit

@@ -4,7 +4,6 @@
 """Batched operations."""
 
 from functools import partial
-from inspect import signature
 
 import jax
 import jax.numpy as jnp
@@ -39,7 +38,7 @@ from jax.tree_util import (
 )
 from packaging import version
 
-from ._utils import Index, errorif, identity, warnif
+from ._utils import errorif, identity, warnif
 
 try:
     from jax._src.api_util import argnums_partial2
@@ -65,8 +64,6 @@ except ImportError:
         return wrapped, tuple(dyn_args)
 
 
-_HAS_LAX_RESHAPE_OUT_SHARDING = "out_sharding" in signature(jax.lax.reshape).parameters
-
 try:
     from jax.sharding import AxisType, reshard
 except ImportError:
@@ -74,11 +71,6 @@ except ImportError:
     reshard = None
 
 _JAX_VERSION = version.parse(jax.__version__)
-_MAKE_MESH_KWARGS = (
-    {"axis_types": (jax.sharding.AxisType.Auto,)}
-    if version.parse("0.8.1") <= _JAX_VERSION < version.parse("0.9.0")
-    else {}
-)
 
 # Sharded batching uses automatic mesh axes so that device placement does not
 # leak an explicit mesh into pullback cotangent types. Older JAX versions fall
@@ -95,12 +87,7 @@ _get_first_chunk = partial(tree_map, lambda x: x[0])
 
 
 def _reshape_sharded(x, shape, spec, mesh):
-    out_sharding = NamedSharding(mesh, spec)
-    if AxisType is not None and AxisType.Auto in mesh.axis_types:
-        return jax.lax.with_sharding_constraint(x.reshape(shape), out_sharding)
-    if _HAS_LAX_RESHAPE_OUT_SHARDING:
-        return jax.lax.reshape(x, shape, out_sharding=out_sharding)
-    return x.reshape(shape)
+    return jax.lax.with_sharding_constraint(x.reshape(shape), NamedSharding(mesh, spec))
 
 
 def _make_automatic_mesh(num_devices):
@@ -129,9 +116,8 @@ def _mesh_axis_name(mesh):
     return mesh.axis_names[0]
 
 
-def _empty_along_axis_like(x, axis):
-    shape = (*x.shape[:axis], 0, *x.shape[axis + 1 :])
-    return jnp.empty(shape, dtype=x.dtype)
+def _empty_leading_axis_like(x):
+    return jnp.empty((0, *x.shape[1:]), dtype=x.dtype)
 
 
 def _reshard_leaf_to_replicated(x, mesh):
@@ -188,34 +174,9 @@ def _scanmap(fun, argnums=0, reduction=None, chunk_reduction=identity):
     return f_
 
 
-def make_shardable(f, axis=0, num_devices=None):
-    """Return sharded and remainder portions of ``f``.
-
-    Parameters
-    ----------
-    f : Pytree
-    axis : int
-        Axis across which ``f`` should be sharded.
-    num_devices : int
-        Number of devices to shard on.
-        If not given, then determined according to ``jax_device_count()``.
-
-    Return
-    ------
-    sf : Pytree
-        Sharded portion of ``f``.
-    rf : Pytree
-        Remainder portion of ``f``.
-
-    """
-    num_devices = jax.device_count() if num_devices is None else num_devices
-    mesh = jax.make_mesh((num_devices,), ("x",), **_MAKE_MESH_KWARGS)
-    return _make_shardable(f, axis, num_devices, mesh)
-
-
-def _make_shardable(f, axis, num_devices, mesh):
+def _split_shardable(f, mesh):
     leaves, treedef = tree_flatten(f)
-    out = [_shard(leaf, axis, num_devices, mesh) for leaf in leaves]
+    out = [_shard(leaf, mesh) for leaf in leaves]
     sf = treedef.unflatten(f[0] for f in out)
     rf = treedef.unflatten(f[1] for f in out)
     return sf, rf
@@ -232,53 +193,45 @@ def _replicate_unmapped_explicit(f, mesh):
     )
 
 
-def _shard(f, axis, num_devices, mesh):
-    axis = axis % f.ndim
+def _shard(f, mesh):
+    num_devices = mesh.size
     has_explicit_sharding = _has_explicit_sharding(f)
-    shardable_size = f.shape[axis] - (f.shape[axis] % num_devices)
-    prefix_index = Index.get(slice(0, shardable_size), axis, f.ndim)
-    remainder_index = Index.get(slice(shardable_size, f.shape[axis]), axis, f.ndim)
-    P = PartitionSpec(
-        *(None,) * axis,
-        _mesh_axis_name(mesh),
-        *(None,) * (f.ndim - axis - 1),
+    shardable_size = f.shape[0] - (f.shape[0] % num_devices)
+    sharding = NamedSharding(
+        mesh,
+        PartitionSpec(_mesh_axis_name(mesh), *(None,) * (f.ndim - 1)),
     )
-    sharding = NamedSharding(mesh, P)
     if has_explicit_sharding:
         if shardable_size == 0:
             # Empty slices of Explicit arrays require a mesh context on JAX
             # 0.10.2. The empty prefix is not evaluated, so construct it
             # independently and replicate the full remainder directly.
             return (
-                _empty_along_axis_like(f, axis),
+                _empty_leading_axis_like(f),
                 _reshard_leaf_to_replicated(f, mesh),
             )
         # Change the divisible prefix directly to the batching layout. Replicate
         # only the small global remainder that is evaluated on one device.
         sf = jax.device_put(
-            f if shardable_size == f.shape[axis] else f[prefix_index], sharding
+            f if shardable_size == f.shape[0] else f[:shardable_size], sharding
         )
-        if shardable_size < f.shape[axis]:
-            rf = f[remainder_index]
+        if shardable_size < f.shape[0]:
+            rf = f[shardable_size:]
             rf = _reshard_leaf_to_replicated(rf, mesh)
         else:
             # Avoid slicing an empty Explicit array on JAX 0.10.2. The empty
             # remainder is never evaluated, so it does not need a device layout.
-            rf = _empty_along_axis_like(f, axis)
-    elif AxisType is not None and AxisType.Auto in mesh.axis_types:
-        sf = f[prefix_index]
-        rf = f[remainder_index]
-        sf = jax.lax.with_sharding_constraint(sf, sharding)
+            rf = _empty_leading_axis_like(f)
     else:
-        sf = f[prefix_index]
-        rf = f[remainder_index]
-        sf = jax.device_put(sf, sharding)
+        sf = f[:shardable_size]
+        rf = f[shardable_size:]
+        sf = jax.lax.with_sharding_constraint(sf, sharding)
     return sf, rf
 
 
-def _to_device_local_leaf(x, num_devices, mesh):
-    local_size = x.shape[0] // num_devices
-    shape = (num_devices, local_size, *x.shape[1:])
+def _to_device_local_leaf(x, mesh):
+    local_size = x.shape[0] // mesh.size
+    shape = (mesh.size, local_size, *x.shape[1:])
     # Device-local layout: one shard per device, with an unsharded local axis.
     spec = PartitionSpec(_mesh_axis_name(mesh), *(None,) * x.ndim)
     return _reshape_sharded(x, shape, spec, mesh)
@@ -290,8 +243,8 @@ def _flatten_device_local_leaf(x, mesh):
     return _reshape_sharded(x, shape, spec, mesh)
 
 
-def _flat_to_device_local_leaf(x, num_devices, local_size, mesh):
-    shape = (num_devices, local_size, *x.shape[1:])
+def _flat_to_device_local_leaf(x, local_size, mesh):
+    shape = (mesh.size, local_size, *x.shape[1:])
     spec = PartitionSpec(_mesh_axis_name(mesh), None, *(None,) * (x.ndim - 1))
     return _reshape_sharded(x, shape, spec, mesh)
 
@@ -336,14 +289,12 @@ def _unbatch_device_local(x, mesh):
     return tree_map(lambda y: _unbatch_device_local_leaf(y, mesh), x)
 
 
-def _to_device_local(x, num_devices, mesh):
-    return tree_map(lambda y: _to_device_local_leaf(y, num_devices, mesh), x)
+def _to_device_local(x, mesh):
+    return tree_map(lambda y: _to_device_local_leaf(y, mesh), x)
 
 
-def _flat_to_device_local(x, num_devices, local_size, mesh):
-    return tree_map(
-        lambda y: _flat_to_device_local_leaf(y, num_devices, local_size, mesh), x
-    )
+def _flat_to_device_local(x, local_size, mesh):
+    return tree_map(lambda y: _flat_to_device_local_leaf(y, local_size, mesh), x)
 
 
 def _batch_device_local(x, batch_size, mesh):
@@ -359,7 +310,6 @@ def _scan_device_local_chunks(
     argnums,
     reduction,
     chunk_reduction,
-    num_devices,
     batch_size,
     mesh,
     *args,
@@ -371,7 +321,7 @@ def _scan_device_local_chunks(
         x = _flatten_device_local(x, mesh)
         y = chunk_reduction(f_partial(*x))
         if reduction is None:
-            y = _flat_to_device_local(y, num_devices, batch_size, mesh)
+            y = _flat_to_device_local(y, batch_size, mesh)
         return y
 
     scan_fun = _scan_append if reduction is None else _scan_reduce
@@ -384,7 +334,6 @@ def _evaluate_device_local_in_chunks(
     argnums,
     reduction,
     chunk_reduction,
-    num_devices,
     mesh,
     *args,
     **kwargs,
@@ -398,7 +347,7 @@ def _evaluate_device_local_in_chunks(
         )
         y = chunk_reduction(fun(*flat_args, **kwargs))
         if reduction is None:
-            y = _flat_to_device_local(y, num_devices, local_size, mesh)
+            y = _flat_to_device_local(y, local_size, mesh)
         return y
 
     scan_x = tuple(
@@ -411,7 +360,6 @@ def _evaluate_device_local_in_chunks(
         argnums,
         reduction,
         chunk_reduction,
-        num_devices,
         batch_size,
         mesh,
         *scan_x,
@@ -435,7 +383,7 @@ def _evaluate_device_local_in_chunks(
     )
     remain_y = chunk_reduction(fun(*flat_remain_x, **kwargs))
     if reduction is None:
-        remain_y = _flat_to_device_local(remain_y, num_devices, local_remainder, mesh)
+        remain_y = _flat_to_device_local(remain_y, local_remainder, mesh)
         return _concat_device_local(y, remain_y)
 
     return reduction(y, remain_y)
@@ -455,14 +403,12 @@ def _evaluate_sharded(
         mesh = _make_automatic_mesh(jax.device_count())
     else:
         mesh = _validate_sharding_mesh(mesh)
-    num_devices = mesh.size
     return _evaluate_sharded_on_mesh(
         fun,
         batch_size,
         argnums,
         reduction,
         chunk_reduction,
-        num_devices,
         mesh,
         *args,
         **kwargs,
@@ -535,7 +481,6 @@ def _evaluate_sharded_on_mesh(
     argnums,
     reduction,
     chunk_reduction,
-    num_devices,
     mesh,
     *args,
     **kwargs,
@@ -543,7 +488,7 @@ def _evaluate_sharded_on_mesh(
     split_args = []
     for i, a in enumerate(args):
         if i in argnums:
-            split_args.append(_make_shardable(a, 0, num_devices, mesh))
+            split_args.append(_split_shardable(a, mesh))
         else:
             a = _replicate_unmapped_explicit(a, mesh)
             split_args.append((a, a))
@@ -568,7 +513,7 @@ def _evaluate_sharded_on_mesh(
         out_shardable = chunk_reduction(fun(*args_shardable, **kwargs))
     else:
         args_local = tuple(
-            _to_device_local(a, num_devices, mesh) if i in argnums else a
+            _to_device_local(a, mesh) if i in argnums else a
             for i, a in enumerate(args_shardable)
         )
         out_shardable = _evaluate_device_local_in_chunks(
@@ -577,7 +522,6 @@ def _evaluate_sharded_on_mesh(
             argnums,
             reduction,
             chunk_reduction,
-            num_devices,
             mesh,
             *args_local,
             **kwargs,

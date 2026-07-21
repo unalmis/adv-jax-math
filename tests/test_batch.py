@@ -14,16 +14,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from packaging import version
 
 from adv_jax_math._batch import (
-    _MAKE_MESH_KWARGS,
     _SUPPORTS_SHARDED_BATCHING,
     batch_jacfwd,
     batch_jacrev,
     batch_map,
     batch_vectorize,
     batch_vmap,
-    make_shardable,
+)
+
+_CALLER_MESH_KWARGS = (
+    {"axis_types": (jax.sharding.AxisType.Auto,)}
+    if version.parse("0.8.1") <= version.parse(jax.__version__) < version.parse("0.9.0")
+    else {}
 )
 
 
@@ -275,7 +280,7 @@ def test_chunked_batching_preserves_caller_sharding():
         (1,),
         ("caller",),
         devices=jax.devices()[:1],
-        **_MAKE_MESH_KWARGS,
+        **_CALLER_MESH_KWARGS,
     )
     sharding = NamedSharding(mesh, PartitionSpec())
     x = jax.device_put(jnp.arange(8.0), sharding)
@@ -308,10 +313,10 @@ def test_sharded_evaluation_combines_remainders(
     if not batch_module._SUPPORTS_SHARDED_BATCHING:
         pytest.skip("Sharded batching requires JAX 0.10.2 or newer")
 
-    def split(value, _axis, _num_devices, _mesh):
+    def split(value, _mesh):
         return value[:split_at], value[split_at:]
 
-    monkeypatch.setattr(batch_module, "_make_shardable", split)
+    monkeypatch.setattr(batch_module, "_split_shardable", split)
     mesh = batch_module._make_automatic_mesh(1)
     x = jnp.arange(5.0)
     actual = batch_module._evaluate_sharded_on_mesh(
@@ -320,7 +325,6 @@ def test_sharded_evaluation_combines_remainders(
         (0,),
         reduction,
         chunk_reduction,
-        1,
         mesh,
         x,
     )
@@ -801,9 +805,7 @@ def test_explicit_input_replicates_only_global_remainder():
                 jnp.arange(12.0),
                 NamedSharding(caller_mesh, PartitionSpec("caller")),
             )
-            prefix, remainder = batch_module._make_shardable(
-                even, 0, 4, batching_mesh
-            )
+            prefix, remainder = batch_module._split_shardable(even, batching_mesh)
             assert not prefix.sharding.is_fully_replicated
             assert remainder.size == 0
             assert resharded_shapes == []
@@ -812,9 +814,7 @@ def test_explicit_input_replicates_only_global_remainder():
                 jnp.arange(13.0),
                 NamedSharding(caller_mesh, PartitionSpec()),
             )
-            prefix, remainder = batch_module._make_shardable(
-                odd, 0, 4, batching_mesh
-            )
+            prefix, remainder = batch_module._split_shardable(odd, batching_mesh)
             assert not prefix.sharding.is_fully_replicated
             assert remainder.shape == (1,)
             assert remainder.sharding.is_fully_replicated
@@ -824,77 +824,13 @@ def test_explicit_input_replicates_only_global_remainder():
                 jnp.arange(3.0),
                 NamedSharding(caller_mesh, PartitionSpec()),
             )
-            prefix, remainder = batch_module._make_shardable(
-                small, 0, 4, batching_mesh
-            )
+            prefix, remainder = batch_module._split_shardable(small, batching_mesh)
             assert prefix.shape == (0,)
             assert remainder.shape == (3,)
             assert remainder.sharding.is_fully_replicated
             np.testing.assert_allclose(remainder, small)
             assert resharded_shapes == [(1,), (3,)]
 
-            prefix, remainder = batch_module.make_shardable(
-                even, num_devices=4
-            )
-            assert prefix.shape == (12,)
-            assert remainder.shape == (0,)
-            np.testing.assert_allclose(prefix, even)
-
-            prefix, remainder = batch_module.make_shardable(
-                small, num_devices=4
-            )
-            assert prefix.shape == (0,)
-            assert remainder.shape == (3,)
-            np.testing.assert_allclose(remainder, small)
         finally:
             batch_module._reshard_leaf_to_replicated = original_reshard
         """)
-
-
-@pytest.mark.unit
-def test_make_shardable():
-    """Test that sharding works."""
-    _run_forced_cpu_devices("""
-        import numpy as np
-
-        import jax
-        import jax.numpy as jnp
-
-        from adv_jax_math._batch import make_shardable
-
-        assert jax.device_count() == 4
-
-        f = np.arange(21)
-        sf, rf = make_shardable(f, num_devices=4)
-        assert sf.size == 20
-        assert rf.size == 1
-        np.testing.assert_allclose(
-            np.concatenate([np.asarray(jnp.sin(sf)), np.asarray(jnp.sin(rf))]),
-            jnp.sin(f),
-        )
-
-        f = jnp.arange(20).reshape(2, 10)
-        sf, rf = make_shardable(f, axis=1, num_devices=4)
-        assert sf.shape == (2, 8)
-        assert rf.shape == (2, 2)
-        np.testing.assert_allclose(
-            np.concatenate(
-                [np.asarray(jnp.sin(sf)), np.asarray(jnp.sin(rf))], axis=1
-            ),
-            jnp.sin(f),
-        )
-        """)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("axis", (0, -1))
-def test_make_shardable_defaults_to_available_devices(axis):
-    """The default device count should shard pytrees along normalized axes."""
-    x = {"value": jnp.arange(12.0).reshape(3, 4)}
-    sharded, remainder = make_shardable(x, axis=axis)
-    normalized_axis = axis % x["value"].ndim
-    combined = jnp.concatenate(
-        (sharded["value"], remainder["value"]),
-        axis=normalized_axis,
-    )
-    np.testing.assert_allclose(combined, x["value"])

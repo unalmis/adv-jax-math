@@ -13,25 +13,6 @@ from jaxtyping import Array, Inexact
 from numpy.typing import ArrayLike
 
 
-class _Indexable:
-    """Build an index tuple for selecting one axis of an array."""
-
-    __slots__ = ()
-
-    def __getitem__(self, index):
-        return index
-
-    @staticmethod
-    def get(item, axis: int, ndim: int) -> tuple:
-        """Return a full index tuple with ``item`` at ``axis``."""
-        index = [slice(None)] * ndim
-        index[axis] = item
-        return tuple(index)
-
-
-Index = _Indexable()
-
-
 def isnonnegint(x: Any) -> bool:
     """Determine if x is a non-negative integer."""
     try:
