@@ -778,6 +778,10 @@ def test_sharded_batching_accepts_caller_auto_mesh():
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(
+    not _SUPPORTS_SHARDED_BATCHING,
+    reason="Explicit sharding preparation requires JAX 0.10.2 or newer",
+)
 def test_explicit_input_replicates_only_global_remainder():
     """Preparing explicit input should not replicate its divisible prefix."""
     _run_forced_cpu_devices("""
