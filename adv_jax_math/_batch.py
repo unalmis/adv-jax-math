@@ -182,8 +182,8 @@ def _split_shardable(f, mesh):
     return sf, rf
 
 
-def _replicate_unmapped_explicit(f, mesh):
-    return tree_map(
+def _duplicate_unmapped_explicit(f, mesh):
+    f = tree_map(
         lambda leaf: (
             _reshard_leaf_to_replicated(leaf, mesh)
             if hasattr(leaf, "ndim") and _has_explicit_sharding(leaf)
@@ -191,6 +191,7 @@ def _replicate_unmapped_explicit(f, mesh):
         ),
         f,
     )
+    return f, f
 
 
 def _shard(f, mesh):
@@ -486,14 +487,16 @@ def _evaluate_sharded_on_mesh(
     *args,
     **kwargs,
 ):
-    split_args = []
-    for i, a in enumerate(args):
-        if i in argnums:
-            split_args.append(_split_shardable(a, mesh))
-        else:
-            a = _replicate_unmapped_explicit(a, mesh)
-            split_args.append((a, a))
-    args_shardable, args_remainder = zip(*split_args)
+    args_shardable, args_remainder = zip(
+        *[
+            (
+                _split_shardable(a, mesh)
+                if i in argnums
+                else _duplicate_unmapped_explicit(a, mesh)
+            )
+            for i, a in enumerate(args)
+        ]
+    )
     n_shardable = tree_leaves(args_shardable[argnums[0]])[0].shape[0]
     n_remainder = tree_leaves(args_remainder[argnums[0]])[0].shape[0]
 
