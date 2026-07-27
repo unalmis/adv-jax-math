@@ -582,11 +582,10 @@ def _evaluate_in_chunks(
             **kwargs,
         )
 
-    if batch_size is None:
-        return chunk_reduction(vmapped_fun(*args, **kwargs))
-
-    n_elements = tree_leaves(args[argnums[0]])[0].shape[0]
-    if n_elements <= batch_size:
+    if (
+        batch_size is None
+        or (n_elements := tree_leaves(args[argnums[0]])[0].shape[0]) <= batch_size
+    ):
         return chunk_reduction(vmapped_fun(*args, **kwargs))
 
     scan_x, remain_x = zip(
