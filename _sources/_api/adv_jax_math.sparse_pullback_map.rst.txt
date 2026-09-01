@@ -1,0 +1,6 @@
+﻿adv\_jax\_math.sparse\_pullback\_map
+====================================
+
+.. currentmodule:: adv_jax_math
+
+.. autofunction:: sparse_pullback_map
