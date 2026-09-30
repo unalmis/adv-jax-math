@@ -52,9 +52,14 @@ def _contract_sparse_jvp(out_ndim, diagonal, tangent):
 if version.parse(jax.__version__) >= version.parse("0.11.0"):  # noqa: C901
     from equinox import internal as eqxi
     from jax._src.interpreters.ad import add_tangents
-    from jax.experimental.hijax import VJPHiPrimitive, Zero, jvp_from_lin
+    from jax.experimental.hijax import Zero, jvp_from_lin
 
-    class _SparsePullbackPrimitive(VJPHiPrimitive):
+    try:
+        from jax.experimental.hijax import HiPrim
+    except ImportError:
+        from jax.experimental.hijax import VJPHiPrimitive as HiPrim
+
+    class _SparsePullbackPrimitive(HiPrim):
         jvp = jvp_from_lin
 
         def __init__(self, y_aval, fn_aval, out_aval, *, fn_static, higher_order):
