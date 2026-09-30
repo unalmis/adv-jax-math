@@ -1,0 +1,6 @@
+﻿adv\_jax\_math.batch\_jacfwd
+============================
+
+.. currentmodule:: adv_jax_math
+
+.. autofunction:: batch_jacfwd
