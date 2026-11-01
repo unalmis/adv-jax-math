@@ -16,7 +16,7 @@ pre-commit <= 4.7.0
 
 # testing and benchmarking
 numpy >= 1.20.0
-pytest >= 5.0.0, <= 9.1.1
+pytest >= 5.0.0, <= 9.2.0
 pytest-benchmark <= 5.3.0
 pytest-cov >= 2.6.0, <= 7.1.0
 
